@@ -1,0 +1,18 @@
+{
+  "name": "iso-286",
+  "type": "module",
+  "description": "A library for navigating ISO 286-1:2010 grade and limit deviation tables",
+  "version": "0.1.0",
+  "files": [
+    "iso_286_bg.wasm",
+    "iso_286.js",
+    "iso_286_bg.js",
+    "iso_286.d.ts"
+  ],
+  "main": "iso_286.js",
+  "types": "iso_286.d.ts",
+  "sideEffects": [
+    "./iso_286.js",
+    "./snippets/*"
+  ]
+}
