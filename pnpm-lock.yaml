@@ -12,8 +12,8 @@ importers:
         specifier: ^4.2.1
         version: 4.2.1(vite@7.3.1(@types/node@24.11.0)(jiti@2.6.1)(lightningcss@1.31.1))
       iso-286:
-        specifier: file:../../Rust/iso-286/pkg
-        version: file:../../Rust/iso-286/pkg
+        specifier: file:packages/iso-286/pkg
+        version: file:packages/iso-286/pkg
       tailwindcss:
         specifier: ^4.2.1
         version: 4.2.1
@@ -1065,8 +1065,8 @@ packages:
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
-  iso-286@file:../../Rust/iso-286/pkg:
-    resolution: {directory: ../../Rust/iso-286/pkg, type: directory}
+  iso-286@file:packages/iso-286/pkg:
+    resolution: {directory: packages/iso-286/pkg, type: directory}
 
   jiti@2.6.1:
     resolution: {integrity: sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ==}
@@ -2321,7 +2321,7 @@ snapshots:
 
   isexe@2.0.0: {}
 
-  iso-286@file:../../Rust/iso-286/pkg: {}
+  iso-286@file:packages/iso-286/pkg: {}
 
   jiti@2.6.1: {}
 

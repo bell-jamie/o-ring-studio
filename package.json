@@ -42,7 +42,7 @@
 	},
 	"dependencies": {
 		"@tailwindcss/vite": "^4.2.1",
-		"iso-286": "packages/iso-286/pkg",
+		"iso-286": "file:packages/iso-286/pkg",
 		"tailwindcss": "^4.2.1"
 	}
 }
