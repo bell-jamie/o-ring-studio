@@ -8,7 +8,8 @@
       "Bash(pnpm build:*)",
       "Bash(pnpm add:*)",
       "Bash(pnpm exec:*)",
-      "Bash(npx svelte-check:*)"
+      "Bash(npx svelte-check:*)",
+      "Bash(CI=true pnpm install)"
     ]
   }
 }

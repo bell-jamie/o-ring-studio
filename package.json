@@ -18,6 +18,7 @@
 		"@eslint/js": "^9.39.2",
 		"@lucide/svelte": "^0.575.0",
 		"@sveltejs/adapter-auto": "^7.0.0",
+		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@types/node": "^24",
@@ -41,7 +42,7 @@
 	},
 	"dependencies": {
 		"@tailwindcss/vite": "^4.2.1",
-		"iso-286": "file:../../Rust/iso-286/pkg",
+		"iso-286": "packages/iso-286/pkg",
 		"tailwindcss": "^4.2.1"
 	}
 }
