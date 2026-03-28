@@ -35,6 +35,7 @@ export interface PistonSealResults {
 	stretch: RangeResult;
 	compression: RangeResult;
 	fill: RangeResult;
+	extrusionGap: RangeResult;
 	installedHeight: RangeResult;
 	grooveDepth: RangeResult;
 	stretchedCS: RangeResult;

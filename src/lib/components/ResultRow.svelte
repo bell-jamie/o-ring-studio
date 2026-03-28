@@ -9,9 +9,11 @@
 		criteria: AcceptanceCriteria;
 		unit?: string;
 		decimals?: number;
+		/** Second result for eccentric/side-loaded display (stacked on same card) */
+		secondResult?: RangeResult;
 	}
 
-	let { label, result, criteria, unit = '%', decimals = 1 }: Props = $props();
+	let { label, result, criteria, unit = '%', decimals = 1, secondResult }: Props = $props();
 
 	const statusIcon: Record<Status, typeof CircleCheck> = {
 		ok: CircleCheck,
@@ -28,55 +30,133 @@
 		warn: 'bg-amber-50 border-amber-200',
 		error: 'bg-red-50 border-red-200'
 	};
+	const statusDot: Record<Status, string> = {
+		ok: 'bg-emerald-500',
+		warn: 'bg-amber-500',
+		error: 'bg-red-500'
+	};
 
+	function getWorst(...statuses: Status[]): Status {
+		if (statuses.includes('error')) return 'error';
+		if (statuses.includes('warn')) return 'warn';
+		return 'ok';
+	}
+
+	// Primary result statuses
 	const minStatus = $derived(getStatus(result.min, criteria));
 	const nomStatus = $derived(getStatus(result.nominal, criteria));
 	const maxStatus = $derived(getStatus(result.max, criteria));
-	const worstStatus = $derived<Status>(
-		[minStatus, nomStatus, maxStatus].includes('error')
-			? 'error'
-			: [minStatus, nomStatus, maxStatus].includes('warn')
-				? 'warn'
-				: 'ok'
+	const worstStatus = $derived(getWorst(minStatus, nomStatus, maxStatus));
+
+	// Second result statuses (when eccentric)
+	const minStatus2 = $derived(secondResult ? getStatus(secondResult.min, criteria) : 'ok' as Status);
+	const nomStatus2 = $derived(secondResult ? getStatus(secondResult.nominal, criteria) : 'ok' as Status);
+	const maxStatus2 = $derived(secondResult ? getStatus(secondResult.max, criteria) : 'ok' as Status);
+	const worstStatus2 = $derived(getWorst(minStatus2, nomStatus2, maxStatus2));
+
+	// Overall card status includes both results
+	const cardStatus = $derived(secondResult ? getWorst(worstStatus, worstStatus2) : worstStatus);
+
+	const OverallIcon = $derived(statusIcon[cardStatus]);
+
+	// Gauge bar positioning — shared range across both results so bars are comparable
+	const allVals = $derived(
+		secondResult
+			? [result.min, result.max, secondResult.min, secondResult.max]
+			: [result.min, result.max]
 	);
-
-	const OverallIcon = $derived(statusIcon[worstStatus]);
-
-	const entries = $derived([
-		{ lbl: 'Min', val: result.min, s: minStatus },
-		{ lbl: 'Nom', val: result.nominal, s: nomStatus },
-		{ lbl: 'Max', val: result.max, s: maxStatus }
-	]);
+	const pad = $derived((criteria.max - criteria.min) * 0.4);
+	const vizMin = $derived(Math.min(criteria.min, ...allVals) - pad);
+	const vizMax = $derived(Math.max(criteria.max, ...allVals) + pad);
+	const span = $derived(vizMax - vizMin || 1);
+	const pct = (v: number) => Math.max(0, Math.min(100, ((v - vizMin) / span) * 100));
 
 	function fmt(val: number): string {
 		return val.toFixed(decimals);
 	}
 </script>
 
-<div class="rounded-lg border {statusBg[worstStatus]} px-4 py-3">
-	<div class="mb-2 flex items-center gap-2">
-		<OverallIcon class="size-4 shrink-0 {statusColor[worstStatus]}" />
-		<span class="text-sm font-medium text-foreground">{label}</span>
+{#snippet gauge(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+	{@const MnIcon = statusIcon[mnStat]}
+	{@const MxIcon = statusIcon[mxStat]}
+
+	{#if sideLabel}
+		<div class="mt-2.5 mb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+			{sideLabel}
+		</div>
+	{/if}
+
+	<!-- Nominal hero -->
+	<div class="text-center {sideLabel ? '' : 'mt-1.5'}">
+		<span class="font-mono text-2xl font-bold tracking-tight {statusColor[nmStat]}">
+			{fmt(r.nominal)}
+		</span>
+		<span class="text-sm text-muted-foreground">{unit}</span>
 	</div>
 
-	<div class="grid grid-cols-3 gap-2 text-center">
-		{#each entries as entry (entry.lbl)}
-			{@const ValIcon = statusIcon[entry.s]}
-			<div class="rounded-md border border-border/50 bg-background/60 px-2 py-1.5">
-				<div class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-					{entry.lbl}
-				</div>
-				<div class="flex items-center justify-center gap-1">
-					<ValIcon class="size-3 {statusColor[entry.s]}" />
-					<span class="font-mono text-sm font-semibold text-foreground">
-						{fmt(entry.val)}{unit}
-					</span>
-				</div>
-			</div>
-		{/each}
+	<!-- Min / Max flanking -->
+	<div class="mt-0.5 flex items-center justify-between px-1">
+		<div class="flex items-center gap-1">
+			<MnIcon class="size-2.5 {statusColor[mnStat]}" />
+			<span class="font-mono text-[11px] text-muted-foreground">
+				{fmt(r.min)}{unit}
+			</span>
+		</div>
+		<span class="text-[10px] text-muted-foreground/50">min / max</span>
+		<div class="flex items-center gap-1">
+			<span class="font-mono text-[11px] text-muted-foreground">
+				{fmt(r.max)}{unit}
+			</span>
+			<MxIcon class="size-2.5 {statusColor[mxStat]}" />
+		</div>
 	</div>
 
-	<div class="mt-2 text-center text-[10px] text-muted-foreground">
-		Target: {criteria.min}–{criteria.max}{unit}
+	<!-- Gauge bar -->
+	<div class="relative mt-1.5 h-1.5 rounded-full bg-muted">
+		<!-- Acceptance zone -->
+		<div
+			class="absolute inset-y-0 rounded-full bg-emerald-400/25"
+			style="left: {pct(criteria.min)}%; right: {100 - pct(criteria.max)}%"
+		></div>
+		<!-- Value range (min to max) -->
+		<div
+			class="absolute inset-y-0 rounded-full bg-current opacity-15 {statusColor[wStat]}"
+			style="left: {pct(r.min)}%; right: {100 - pct(r.max)}%"
+		></div>
+		<!-- Min tick -->
+		<div
+			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mnStat]} opacity-40"
+			style="left: {pct(r.min)}%"
+		></div>
+		<!-- Max tick -->
+		<div
+			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mxStat]} opacity-40"
+			style="left: {pct(r.max)}%"
+		></div>
+		<!-- Nominal dot -->
+		<div
+			class="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background {statusDot[nmStat]}"
+			style="left: {pct(r.nominal)}%"
+		></div>
 	</div>
+{/snippet}
+
+<div class="rounded-lg border {statusBg[cardStatus]} px-4 py-3">
+	<!-- Header -->
+	<div class="flex items-center justify-between">
+		<div class="flex items-center gap-2">
+			<OverallIcon class="size-4 shrink-0 {statusColor[cardStatus]}" />
+			<span class="text-sm font-medium text-foreground">{label}</span>
+		</div>
+		<span class="text-[10px] text-muted-foreground">
+			Target {criteria.min}{unit} – {criteria.max}{unit}
+		</span>
+	</div>
+
+	{#if secondResult}
+		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus, 'loaded')}
+		{@render gauge(secondResult, worstStatus2, minStatus2, nomStatus2, maxStatus2, 'unloaded')}
+	{:else}
+		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus)}
+	{/if}
 </div>

@@ -148,8 +148,158 @@ export function calculateAll(inputs: PistonSealInputs): PistonSealResults {
 	const stretchedCS = calcStretchedCS(cs, id, grooveDia);
 	const compression = calcCompression(installedHeight, stretchedCS);
 	const fill = calcFill(stretchedCS, grooveWidth, grooveDepth, grooveRadii);
+	const extrusionGap = calcExtrusionGap(boreDia, pistonDia);
 
-	return { stretch, compression, fill, installedHeight, grooveDepth, stretchedCS };
+	return { stretch, compression, fill, extrusionGap, installedHeight, grooveDepth, stretchedCS };
+}
+
+/**
+ * Extrusion gap = (boreDia - pistonDia) / 2  (radial clearance)
+ * Min: smallest bore, largest piston
+ * Max: largest bore, smallest piston
+ */
+export function calcExtrusionGap(
+	boreDia: ResolvedDimension,
+	pistonDia: ResolvedDimension
+): RangeResult {
+	return {
+		nominal: (boreDia.nominal - pistonDia.nominal) / 2,
+		min: (boreDia.min - pistonDia.max) / 2,
+		max: (boreDia.max - pistonDia.min) / 2
+	};
+}
+
+/**
+ * Apply piston eccentricity to concentric results.
+ * Eccentricity 0 = concentric, 1 = fully side-loaded (gap closes on tight side).
+ * Returns tight-side and loose-side result sets.
+ */
+export function applyEccentricity(
+	base: PistonSealResults,
+	inputs: PistonSealInputs,
+	eccentricity: number
+): { tight: PistonSealResults; loose: PistonSealResults } {
+	if (eccentricity <= 0) return { tight: base, loose: base };
+
+	const bore = resolve(inputs.boreDia);
+	const piston = resolve(inputs.pistonDia);
+	const grooveWidth = resolve(inputs.grooveWidth);
+	const grooveRadii = resolve(inputs.grooveRadii);
+
+	function offsetSide(sign: 1 | -1): PistonSealResults {
+		// sign = -1 → tight/loaded side (piston shifts toward bore, gap closes)
+		// sign = +1 → loose/unloaded side (piston shifts away, gap opens)
+		//
+		// Radial offset = eccentricity × (clearance / 2) at each tolerance extreme.
+		// Installed height changes by this offset: tight side IH shrinks, loose side grows.
+		const offsetNom = sign * eccentricity * base.extrusionGap.nominal;
+		const offsetMin = sign * eccentricity * base.extrusionGap.min;
+		const offsetMax = sign * eccentricity * base.extrusionGap.max;
+
+		// Installed height shifts by offset
+		const ih: RangeResult = {
+			nominal: base.installedHeight.nominal + offsetNom,
+			min: base.installedHeight.min + offsetMin,
+			max: base.installedHeight.max + offsetMax
+		};
+
+		// Recompute compression with adjusted IH
+		const compression: RangeResult = {
+			nominal: ((base.stretchedCS.nominal - ih.nominal) / base.stretchedCS.nominal) * 100,
+			min: ((base.stretchedCS.min - ih.max) / base.stretchedCS.min) * 100,
+			max: ((base.stretchedCS.max - ih.min) / base.stretchedCS.max) * 100
+		};
+
+		// Groove depth doesn't change (groove is on piston, moves with it)
+		const grooveDepth: RangeResult = {
+			nominal: base.grooveDepth.nominal,
+			min: base.grooveDepth.min,
+			max: base.grooveDepth.max
+		};
+		const fill = calcFill(base.stretchedCS, grooveWidth, grooveDepth, grooveRadii);
+
+		// Extrusion gap: base gap + offset (tight side shrinks, loose side grows)
+		const extrusionGap: RangeResult = {
+			nominal: base.extrusionGap.nominal + offsetNom,
+			min: base.extrusionGap.min + offsetMin,
+			max: base.extrusionGap.max + offsetMax
+		};
+
+		return {
+			...base,
+			installedHeight: ih,
+			compression,
+			fill,
+			grooveDepth,
+			extrusionGap
+		};
+	}
+
+	return {
+		tight: offsetSide(-1),
+		loose: offsetSide(1)
+	};
+}
+
+/** Round to the nearest "nice" machining number based on magnitude */
+function roundNice(v: number, dir: 'nearest' | 'up' | 'down' = 'nearest'): number {
+	const step = v >= 100 ? 1 : v >= 10 ? 0.5 : v >= 1 ? 0.1 : 0.05;
+	// Use 1/step integer math to avoid floating-point artifacts
+	const inv = Math.round(1 / step);
+	if (dir === 'up') return Math.ceil(v * inv) / inv;
+	if (dir === 'down') return Math.floor(v * inv) / inv;
+	return Math.round(v * inv) / inv;
+}
+
+export interface GeneratedHousing {
+	boreDia: number;
+	pistonDia: number;
+	grooveDia: number;
+	grooveWidth: number;
+}
+
+/**
+ * Generate housing dimensions for a given o-ring to hit target stretch/compression/fill.
+ * All nominals are rounded to machinist-friendly numbers.
+ *
+ * @param cs       O-ring cross-section nominal (mm)
+ * @param id       O-ring inner diameter nominal (mm)
+ * @param targetStretch      Target stretch % (default 3)
+ * @param targetCompression  Target compression % (default 20)
+ * @param targetFill         Target fill % (default 75)
+ * @param grooveRadii        Groove corner radii (default 0.3 mm)
+ */
+export function generateHousing(
+	cs: number,
+	id: number,
+	targetStretch = 3,
+	targetCompression = 20,
+	targetFill = 75,
+	grooveRadii = 0.3
+): GeneratedHousing {
+	// 1. Groove diameter — round to nearest, then recompute actual stretch
+	const grooveDia = roundNice(id * (1 + targetStretch / 100));
+
+	// 2. Recompute stretched CS from the actual rounded groove diameter
+	const csStretched = cs * Math.pow(id / grooveDia, 2 / 3);
+
+	// 3. Installed height for target compression
+	//    compression% = (CS_s - IH) / CS_s × 100  →  IH = CS_s × (1 - comp/100)
+	const ih = csStretched * (1 - targetCompression / 100);
+
+	// 4. Bore & piston share the same nominal — round to nearest
+	const boreDia = roundNice(grooveDia + 2 * ih);
+	const pistonDia = boreDia;
+
+	// 5. Groove width — use actual rounded groove depth for fill calculation
+	const grooveDepth = (pistonDia - grooveDia) / 2;
+	const oRingArea = Math.PI * (csStretched / 2) ** 2;
+	const radiiCorrection = 2 * grooveRadii ** 2 * (1 - Math.PI / 4);
+	const grooveAreaNeeded = oRingArea / (targetFill / 100);
+	const widthExact = (grooveAreaNeeded + radiiCorrection) / grooveDepth;
+	const grooveWidth = roundNice(Math.max(widthExact, cs * 1.1));
+
+	return { boreDia, pistonDia, grooveDia, grooveWidth };
 }
 
 /** Determine status of a value against acceptance criteria */
