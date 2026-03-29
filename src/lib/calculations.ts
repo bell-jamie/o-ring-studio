@@ -162,10 +162,12 @@ export function calcExtrusionGap(
 	boreDia: ResolvedDimension,
 	pistonDia: ResolvedDimension
 ): RangeResult {
+	const min = (boreDia.min - pistonDia.max) / 2;
+	const max = (boreDia.max - pistonDia.min) / 2;
 	return {
-		nominal: (boreDia.nominal - pistonDia.nominal) / 2,
-		min: (boreDia.min - pistonDia.max) / 2,
-		max: (boreDia.max - pistonDia.min) / 2
+		nominal: (min + max) / 2,
+		min,
+		max
 	};
 }
 
@@ -272,9 +274,9 @@ export interface GeneratedHousing {
 export function generateHousing(
 	cs: number,
 	id: number,
-	targetStretch = 3,
+	targetStretch = 5,
 	targetCompression = 20,
-	targetFill = 75,
+	targetFill = 65,
 	grooveRadii = 0.3
 ): GeneratedHousing {
 	// 1. Groove diameter — round to nearest, then recompute actual stretch

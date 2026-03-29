@@ -13,7 +13,7 @@
 		pistonDia: { nominal: '', upperTol: '', lowerTol: '' },
 		grooveDia: { nominal: '', upperTol: '', lowerTol: '' },
 		grooveWidth: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
-		grooveRadii: { nominal: '0.3', upperTol: '0.1', lowerTol: '0.1' },
+		grooveRadii: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
 		oRingCS: { nominal: '', upperTol: '', lowerTol: '' },
 		oRingID: { nominal: '', upperTol: '', lowerTol: '' }
 	});
@@ -85,7 +85,12 @@
 	let sizeClass = $state<'A' | 'B'>('A');
 
 	// CS options: Class A uses INCH_SIZES directly, Class B merges inch + metric with labels
-	interface CSOption { cs: number; label: string; group?: string; sourceKey: SizeClass }
+	interface CSOption {
+		cs: number;
+		label: string;
+		group?: string;
+		sourceKey: SizeClass;
+	}
 	const csOptions = $derived.by((): CSOption[] => {
 		if (sizeClass === 'A') {
 			return ISO3601_SIZES['A'].map((g) => ({
@@ -140,8 +145,8 @@
 		const cs = parseFloat(inputs.oRingCS.nominal);
 		const id = parseFloat(inputs.oRingID.nominal);
 		if (isNaN(cs) || isNaN(id)) return;
-		const radii = parseFloat(inputs.grooveRadii.nominal) || 0.3;
-		const h = generateHousing(cs, id, 3, 20, 75, radii);
+		const h = generateHousing(cs, id, 5, 20, 65);
+		inputs.grooveRadii.nominal = '0.3';
 		inputs.boreDia.nominal = String(h.boreDia);
 		inputs.pistonDia.nominal = String(h.pistonDia);
 		inputs.grooveDia.nominal = String(h.grooveDia);
@@ -149,6 +154,7 @@
 	}
 
 	let eccentricity = $state(0);
+	let showEccentricity = $state(false);
 	let showDetails = $state(false);
 
 	// Combobox state
@@ -161,7 +167,7 @@
 	}
 
 	const eccResults = $derived(
-		results && parsed() && eccentricity > 0
+		results && parsed() && showEccentricity
 			? applyEccentricity(results, parsed()!, eccentricity)
 			: null
 	);
@@ -180,14 +186,13 @@
 	const extrusionGapCriteria = $derived<AcceptanceCriteria>({ min: 0, max: extrusionGapMax });
 </script>
 
-
 <div class="min-h-screen bg-background">
 	<!-- Header -->
 	<header class="border-b border-border bg-card">
 		<div class="mx-auto max-w-5xl px-6 py-5">
 			<div>
-				<h1 class="text-xl font-semibold text-foreground">O-Ring Compression Calculator</h1>
-				<p class="mt-0.5 text-sm text-muted-foreground">Piston seal tolerance-stack analysis</p>
+				<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
+				<!-- <p class="mt-0.5 text-sm text-muted-foreground">Piston seal tolerance-stack analysis</p> -->
 			</div>
 		</div>
 	</header>
@@ -202,7 +207,7 @@
 					<div class="space-y-4">
 						<TolerancedInput
 							label="Bore Diameter"
-							placeholder="e.g. 120.000"
+							placeholder="-"
 							fitType="hole"
 							defaultFitClass="H8"
 							bind:nominal={inputs.boreDia.nominal}
@@ -211,7 +216,7 @@
 						/>
 						<TolerancedInput
 							label="Piston Diameter"
-							placeholder="e.g. 119.600"
+							placeholder="-"
 							fitType="shaft"
 							defaultFitClass="f7"
 							bind:nominal={inputs.pistonDia.nominal}
@@ -220,7 +225,7 @@
 						/>
 						<TolerancedInput
 							label="Groove Diameter"
-							placeholder="e.g. 113.000"
+							placeholder="-"
 							fitType="shaft"
 							defaultFitClass="h9"
 							bind:nominal={inputs.grooveDia.nominal}
@@ -229,14 +234,14 @@
 						/>
 						<TolerancedInput
 							label="Groove Width"
-							placeholder="e.g. 4.750"
+							placeholder="-"
 							bind:nominal={inputs.grooveWidth.nominal}
 							bind:upperTol={inputs.grooveWidth.upperTol}
 							bind:lowerTol={inputs.grooveWidth.lowerTol}
 						/>
 						<TolerancedInput
 							label="Groove Radii"
-							placeholder="e.g. 0.400"
+							placeholder="-"
 							bind:nominal={inputs.grooveRadii.nominal}
 							bind:upperTol={inputs.grooveRadii.upperTol}
 							bind:lowerTol={inputs.grooveRadii.lowerTol}
@@ -244,44 +249,46 @@
 					</div>
 				</section>
 
-			<!-- O-Ring dimensions -->
+				<!-- O-Ring dimensions -->
 				<section class="rounded-xl border border-border bg-card p-5">
-					<div class="mb-4 flex items-center gap-2">
+					<div class="mb-4 flex flex-col gap-2">
 						<h2 class="text-sm font-medium text-foreground">O-Ring Dimensions</h2>
-						<span class="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-							ISO 3601-1
-						</span>
-						{#if matchedSize?.dash}
-							<span class="rounded bg-foreground px-1.5 py-0.5 font-mono text-[10px] font-semibold text-background">
-								{matchedSize.dash}
-							</span>
-						{/if}
-						<div class="ml-auto flex rounded border border-input text-[10px] font-medium">
-							<button
-								onclick={() => (sizeClass = 'A')}
-								class="px-2 py-0.5 transition-colors {sizeClass === 'A'
-									? 'bg-primary text-primary-foreground'
-									: 'text-muted-foreground hover:bg-muted'}">Class A</button
-							>
-							<button
-								onclick={() => (sizeClass = 'B')}
-								class="border-l border-input px-2 py-0.5 transition-colors {sizeClass === 'B'
-									? 'bg-primary text-primary-foreground'
-									: 'text-muted-foreground hover:bg-muted'}">Class B</button
-							>
+						<div class="flex items-center gap-2">
+							<span class="text-[10px] text-muted-foreground">ISO 3601-1</span>
+							{#if matchedSize?.dash}
+								<span
+									class="rounded bg-foreground px-1.5 py-0.5 font-mono text-[10px] font-bold text-background"
+									>{matchedSize.dash}</span
+								>
+							{/if}
+							<div class="ml-auto flex rounded border border-input text-[10px] font-medium">
+								<button
+									onclick={() => (sizeClass = 'A')}
+									class="rounded-l px-2 py-0.5 transition-colors {sizeClass === 'A'
+										? 'bg-primary text-primary-foreground'
+										: 'text-muted-foreground hover:bg-muted'}">Class A</button
+								>
+								<button
+									onclick={() => (sizeClass = 'B')}
+									class="rounded-r border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
+									'B'
+										? 'bg-primary text-primary-foreground'
+										: 'text-muted-foreground hover:bg-muted'}">Class B</button
+								>
+							</div>
 						</div>
 					</div>
 					<div class="space-y-4">
 						<!-- CS row -->
 						<div class="space-y-1.5">
-							<span class="text-sm text-muted-foreground">Cross-Section (CS)</span>
+							<span class="text-sm text-muted-foreground">Cross-Section</span>
 							<div class="flex items-center gap-1.5">
 								<!-- svelte-ignore a11y_role_has_required_aria_props -->
 								<div class="relative min-w-0 flex-1" role="combobox">
 									<input
 										type="text"
 										inputmode="decimal"
-										placeholder="e.g. 3.53"
+										placeholder="CS"
 										bind:value={inputs.oRingCS.nominal}
 										onclick={() => (csOpen = true)}
 										onfocus={() => (csOpen = true)}
@@ -289,33 +296,64 @@
 										class="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 									/>
 									{#if csOpen}
-										<div class="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-auto rounded-md border border-border bg-card py-1 shadow-md">
+										<div
+											class="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-auto rounded-md border border-border bg-card py-1 shadow-md"
+										>
 											{#if sizeClass === 'A'}
 												{#each csOptions as opt (opt.cs)}
 													<button
 														type="button"
-														onmousedown={(e) => { e.preventDefault(); comboSelect('oRingCS', String(opt.cs), () => (csOpen = false)); }}
-														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(opt.cs) === inputs.oRingCS.nominal ? 'bg-muted font-medium' : 'text-foreground'}"
-													>{opt.cs}</button>
+														onmousedown={(e) => {
+															e.preventDefault();
+															comboSelect('oRingCS', String(opt.cs), () => (csOpen = false));
+														}}
+														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(
+															opt.cs
+														) === inputs.oRingCS.nominal
+															? 'bg-muted font-medium'
+															: 'text-foreground'}">{opt.cs}</button
+													>
 												{/each}
 											{:else}
 												{@const inchOpts = csOptions.filter((o) => o.group === 'Inch-derived')}
 												{@const metricOpts = csOptions.filter((o) => o.group === 'Metric')}
-												<div class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Inch-derived</div>
+												<div
+													class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+												>
+													Inch-derived
+												</div>
 												{#each inchOpts as opt (opt.cs + opt.sourceKey)}
 													<button
 														type="button"
-														onmousedown={(e) => { e.preventDefault(); comboSelect('oRingCS', String(opt.cs), () => (csOpen = false)); }}
-														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(opt.cs) === inputs.oRingCS.nominal ? 'bg-muted font-medium' : 'text-foreground'}"
-													>{opt.cs}</button>
+														onmousedown={(e) => {
+															e.preventDefault();
+															comboSelect('oRingCS', String(opt.cs), () => (csOpen = false));
+														}}
+														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(
+															opt.cs
+														) === inputs.oRingCS.nominal
+															? 'bg-muted font-medium'
+															: 'text-foreground'}">{opt.cs}</button
+													>
 												{/each}
-												<div class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Metric</div>
+												<div
+													class="px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+												>
+													Metric
+												</div>
 												{#each metricOpts as opt (opt.cs + opt.sourceKey)}
 													<button
 														type="button"
-														onmousedown={(e) => { e.preventDefault(); comboSelect('oRingCS', String(opt.cs), () => (csOpen = false)); }}
-														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(opt.cs) === inputs.oRingCS.nominal ? 'bg-muted font-medium' : 'text-foreground'}"
-													>{opt.cs}</button>
+														onmousedown={(e) => {
+															e.preventDefault();
+															comboSelect('oRingCS', String(opt.cs), () => (csOpen = false));
+														}}
+														class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(
+															opt.cs
+														) === inputs.oRingCS.nominal
+															? 'bg-muted font-medium'
+															: 'text-foreground'}">{opt.cs}</button
+													>
 												{/each}
 											{/if}
 										</div>
@@ -341,14 +379,14 @@
 
 						<!-- ID row -->
 						<div class="space-y-1.5">
-							<span class="text-sm text-muted-foreground">Inner Diameter (ID)</span>
+							<span class="text-sm text-muted-foreground">Inner Diameter</span>
 							<div class="flex items-center gap-1.5">
 								<!-- svelte-ignore a11y_role_has_required_aria_props -->
 								<div class="relative min-w-0 flex-1" role="combobox">
 									<input
 										type="text"
 										inputmode="decimal"
-										placeholder="e.g. 106.00"
+										placeholder="ID"
 										bind:value={inputs.oRingID.nominal}
 										onclick={() => activeGroup && (idOpen = true)}
 										onfocus={() => activeGroup && (idOpen = true)}
@@ -356,13 +394,26 @@
 										class="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 									/>
 									{#if idOpen && activeGroup}
-										<div class="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-auto rounded-md border border-border bg-card py-1 shadow-md">
+										<div
+											class="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-auto rounded-md border border-border bg-card py-1 shadow-md"
+										>
 											{#each activeGroup.sizes as size (size.id)}
 												<button
 													type="button"
-													onmousedown={(e) => { e.preventDefault(); comboSelect('oRingID', String(size.id), () => (idOpen = false)); }}
-													class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(size.id) === inputs.oRingID.nominal ? 'bg-muted font-medium' : 'text-foreground'}"
-												>{size.id.toFixed(2)}</button>
+													onmousedown={(e) => {
+														e.preventDefault();
+														comboSelect('oRingID', String(size.id), () => (idOpen = false));
+													}}
+													class="flex w-full px-2.5 py-1.5 text-left text-sm hover:bg-muted {String(
+														size.id
+													) === inputs.oRingID.nominal
+														? 'bg-muted font-medium'
+														: 'text-foreground'}"
+													>{size.id.toFixed(2)}{#if size.dash}<span
+															class="ml-auto rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
+															>{size.dash}</span
+														>{/if}</button
+												>
 											{/each}
 										</div>
 									{/if}
@@ -400,7 +451,21 @@
 			<!-- Results -->
 			<div class="space-y-4">
 				<section class="rounded-xl border border-border bg-card p-5">
-					<h2 class="mb-4 text-sm font-medium text-foreground">Results</h2>
+					<div class="mb-4 flex items-center gap-2">
+						<h2 class="text-sm font-medium text-foreground">Results</h2>
+						<button
+							type="button"
+							onclick={() => {
+								showEccentricity = !showEccentricity;
+								if (!showEccentricity) eccentricity = 0;
+							}}
+							class="ml-auto rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors {showEccentricity
+								? 'border-primary bg-primary/10 text-primary'
+								: 'border-input text-muted-foreground hover:border-foreground/20 hover:text-foreground'}"
+						>
+							{showEccentricity ? 'Non-concentric' : 'Concentric'}
+						</button>
+					</div>
 
 					{#if !results}
 						<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
@@ -409,28 +474,30 @@
 							</p>
 						</div>
 					{:else}
-						<!-- Eccentricity slider -->
-						<div class="mb-4">
-							<label for="eccentricity-slider" class="flex items-center justify-between text-sm">
-								<span class="text-muted-foreground">Piston eccentricity</span>
-								<span class="font-mono text-xs text-foreground"
-									>{(eccentricity * 100).toFixed(0)}%</span
-								>
-							</label>
-							<input
-								id="eccentricity-slider"
-								type="range"
-								min="0"
-								max="1"
-								step="0.01"
-								bind:value={eccentricity}
-								class="mt-1 w-full accent-primary"
-							/>
-							<div class="flex justify-between text-[10px] text-muted-foreground">
-								<span>Concentric</span>
-								<span>Fully eccentric</span>
+						{#if showEccentricity}
+							<!-- Eccentricity slider -->
+							<div class="mb-3">
+								<label for="eccentricity-slider" class="flex items-center justify-between text-xs">
+									<span class="text-muted-foreground">Piston eccentricity</span>
+									<span class="font-mono text-foreground"
+										>{(eccentricity * 100).toFixed(0)}%</span
+									>
+								</label>
+								<input
+									id="eccentricity-slider"
+									type="range"
+									min="0"
+									max="1"
+									step="0.01"
+									bind:value={eccentricity}
+									class="mt-0.5 w-full accent-primary"
+								/>
+								<div class="flex justify-between text-[10px] text-muted-foreground">
+									<span>Concentric</span>
+									<span>Fully eccentric</span>
+								</div>
 							</div>
-						</div>
+						{/if}
 
 						<div class="space-y-3">
 							<ResultRow

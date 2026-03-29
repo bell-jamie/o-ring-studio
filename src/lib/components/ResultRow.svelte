@@ -26,9 +26,9 @@
 		error: 'text-destructive'
 	};
 	const statusBg: Record<Status, string> = {
-		ok: 'bg-emerald-50 border-emerald-200',
-		warn: 'bg-amber-50 border-amber-200',
-		error: 'bg-red-50 border-red-200'
+		ok: 'bg-card border-emerald-400',
+		warn: 'bg-card border-amber-400',
+		error: 'bg-card border-red-400'
 	};
 	const statusDot: Record<Status, string> = {
 		ok: 'bg-emerald-500',
@@ -76,61 +76,50 @@
 	}
 </script>
 
-{#snippet gauge(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+{#snippet values(r: RangeResult, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
 	{@const MnIcon = statusIcon[mnStat]}
 	{@const MxIcon = statusIcon[mxStat]}
-
-	{#if sideLabel}
-		<div class="mt-2.5 mb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-			{sideLabel}
-		</div>
-	{/if}
-
-	<!-- Nominal hero -->
-	<div class="text-center {sideLabel ? '' : 'mt-1.5'}">
-		<span class="font-mono text-2xl font-bold tracking-tight {statusColor[nmStat]}">
-			{fmt(r.nominal)}
-		</span>
-		<span class="text-sm text-muted-foreground">{unit}</span>
-	</div>
-
-	<!-- Min / Max flanking -->
-	<div class="mt-0.5 flex items-center justify-between px-1">
+	<div class="flex items-baseline justify-between px-1">
 		<div class="flex items-center gap-1">
-			<MnIcon class="size-2.5 {statusColor[mnStat]}" />
-			<span class="font-mono text-[11px] text-muted-foreground">
-				{fmt(r.min)}{unit}
-			</span>
+			<MnIcon class="size-3 {statusColor[mnStat]}" />
+			<span class="font-mono text-xs text-foreground/70">{fmt(r.min)}{unit}</span>
 		</div>
-		<span class="text-[10px] text-muted-foreground/50">min / max</span>
-		<div class="flex items-center gap-1">
-			<span class="font-mono text-[11px] text-muted-foreground">
-				{fmt(r.max)}{unit}
+		<div class="flex items-baseline gap-1.5">
+			{#if sideLabel}
+				<span class="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-foreground/50">{sideLabel}</span>
+			{/if}
+			<span class="font-mono {sideLabel ? 'text-base' : 'text-2xl'} font-bold tracking-tight {statusColor[nmStat]}">
+				{fmt(r.nominal)}
 			</span>
-			<MxIcon class="size-2.5 {statusColor[mxStat]}" />
+			<span class="{sideLabel ? 'text-[10px]' : 'text-sm'} text-foreground/50">{unit}</span>
+		</div>
+		<div class="flex items-center gap-1">
+			<span class="font-mono text-xs text-foreground/70">{fmt(r.max)}{unit}</span>
+			<MxIcon class="size-3 {statusColor[mxStat]}" />
 		</div>
 	</div>
+{/snippet}
 
-	<!-- Gauge bar -->
-	<div class="relative mt-1.5 h-1.5 rounded-full bg-muted">
+{#snippet bar(r: RangeResult, wStat: Status, mnStat: Status, mxStat: Status, nmStat: Status)}
+	<div class="relative h-2 rounded-full bg-muted">
 		<!-- Acceptance zone -->
 		<div
-			class="absolute inset-y-0 rounded-full bg-emerald-400/25"
+			class="absolute inset-y-0 rounded-full bg-emerald-400/40"
 			style="left: {pct(criteria.min)}%; right: {100 - pct(criteria.max)}%"
 		></div>
 		<!-- Value range (min to max) -->
 		<div
-			class="absolute inset-y-0 rounded-full bg-current opacity-15 {statusColor[wStat]}"
+			class="absolute inset-y-0 rounded-full bg-current opacity-25 {statusColor[wStat]}"
 			style="left: {pct(r.min)}%; right: {100 - pct(r.max)}%"
 		></div>
 		<!-- Min tick -->
 		<div
-			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mnStat]} opacity-40"
+			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mnStat]} opacity-60"
 			style="left: {pct(r.min)}%"
 		></div>
 		<!-- Max tick -->
 		<div
-			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mxStat]} opacity-40"
+			class="absolute top-1/2 h-3 w-px -translate-y-1/2 {statusDot[mxStat]} opacity-60"
 			style="left: {pct(r.max)}%"
 		></div>
 		<!-- Nominal dot -->
@@ -141,13 +130,24 @@
 	</div>
 {/snippet}
 
+{#snippet gauge(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+	<div class="mt-1.5 space-y-1.5">
+		{@render values(r, mnStat, nmStat, mxStat, sideLabel)}
+		{@render bar(r, wStat, mnStat, mxStat, nmStat)}
+	</div>
+{/snippet}
+
+{#snippet gaugeFlipped(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+	<div class="mt-1.5 space-y-1.5">
+		{@render bar(r, wStat, mnStat, mxStat, nmStat)}
+		{@render values(r, mnStat, nmStat, mxStat, sideLabel)}
+	</div>
+{/snippet}
+
 <div class="rounded-lg border {statusBg[cardStatus]} px-4 py-3">
 	<!-- Header -->
 	<div class="flex items-center justify-between">
-		<div class="flex items-center gap-2">
-			<OverallIcon class="size-4 shrink-0 {statusColor[cardStatus]}" />
-			<span class="text-sm font-medium text-foreground">{label}</span>
-		</div>
+		<span class="text-sm font-medium text-foreground">{label}</span>
 		<span class="text-[10px] text-muted-foreground">
 			Target {criteria.min}{unit} – {criteria.max}{unit}
 		</span>
@@ -155,7 +155,7 @@
 
 	{#if secondResult}
 		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus, 'loaded')}
-		{@render gauge(secondResult, worstStatus2, minStatus2, nomStatus2, maxStatus2, 'unloaded')}
+		{@render gaugeFlipped(secondResult, worstStatus2, minStatus2, nomStatus2, maxStatus2, 'unloaded')}
 	{:else}
 		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus)}
 	{/if}
