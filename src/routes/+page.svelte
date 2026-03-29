@@ -1,11 +1,11 @@
 <script lang="ts">
 	import type { PistonSealInputs, PistonSealResults, AcceptanceCriteria } from '$lib/types';
 	import { calculateAll, generateHousing, applyEccentricity } from '$lib/calculations';
-	import { lookupCSTolerance, lookupIDTolerance, type OringClass } from '$lib/iso3601';
+	import { lookupCSTolerance, lookupIDTolerance, type OringClass } from '$lib/iso3601-tol';
 	import TolerancedInput from '$lib/components/TolerancedInput.svelte';
 	import ResultRow from '$lib/components/ResultRow.svelte';
 	import OringSimulator from '$lib/components/OringSimulator.svelte';
-	import { ISO3601_SIZES, type SizeClass } from '$lib/iso3601-sizes';
+	import { ISO3601_SIZES, type SizeClass } from '$lib/iso3601-size';
 
 	// Input state — strings for binding to number inputs
 	let inputs = $state({
@@ -21,7 +21,7 @@
 	// ISO 3601 auto-populate tolerances when nominal or class changes
 	$effect(() => {
 		const v = parseFloat(inputs.oRingCS.nominal);
-		const cls: OringClass = sizeClass;
+		const cls = oringClass;
 		if (!isNaN(v) && v > 0) {
 			const tol = lookupCSTolerance(v, cls);
 			if (tol) {
@@ -32,9 +32,10 @@
 	});
 	$effect(() => {
 		const v = parseFloat(inputs.oRingID.nominal);
-		const cls: OringClass = sizeClass;
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		const cls = oringClass;
 		if (!isNaN(v) && v > 0) {
-			const tol = lookupIDTolerance(v, cls);
+			const tol = lookupIDTolerance(v, cls, isNaN(cs) ? undefined : cs);
 			if (tol) {
 				inputs.oRingID.upperTol = String(tol.upper);
 				inputs.oRingID.lowerTol = String(Math.abs(tol.lower));
@@ -81,8 +82,11 @@
 
 	const results = $derived(parsed() ? calculateAll(parsed()!) : null);
 
-	// Standard size — simple A/B toggle
-	let sizeClass = $state<'A' | 'B'>('A');
+	// Standard size — A/B/Aero toggle
+	let sizeClass = $state<'A' | 'B' | 'Aero'>('A');
+
+	// Map UI toggle to OringClass for tolerance lookups
+	const oringClass = $derived<OringClass>(sizeClass === 'B' ? 'B' : sizeClass === 'Aero' ? 'Aero' : 'A');
 
 	// CS options: Class A uses INCH_SIZES directly, Class B merges inch + metric with labels
 	interface CSOption {
@@ -97,6 +101,13 @@
 				cs: g.cs,
 				label: `${g.cs.toFixed(2)} mm`,
 				sourceKey: 'A' as SizeClass
+			}));
+		}
+		if (sizeClass === 'Aero') {
+			return ISO3601_SIZES['Aero'].map((g) => ({
+				cs: g.cs,
+				label: `${g.cs.toFixed(2)} mm`,
+				sourceKey: 'Aero' as SizeClass
 			}));
 		}
 		const inch = ISO3601_SIZES['B-in'].map((g) => ({
@@ -162,7 +173,10 @@
 
 	function initTheme() {
 		const stored = localStorage.getItem('theme');
-		if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+		if (
+			stored === 'dark' ||
+			(!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)
+		) {
 			dark = true;
 		}
 		applyTheme();
@@ -287,7 +301,7 @@
 					<div class="mb-4 flex flex-col gap-2">
 						<h2 class="text-sm font-medium text-foreground">O-Ring Dimensions</h2>
 						<div class="flex items-center gap-2">
-							<span class="text-[10px] text-muted-foreground">ISO 3601-1</span>
+							<span class="text-[10px] text-muted-foreground">ISO 3601-1:2012</span>
 							{#if matchedSize?.dash}
 								<span
 									class="rounded bg-foreground px-1.5 py-0.5 font-mono text-[10px] font-bold text-background"
@@ -303,10 +317,17 @@
 								>
 								<button
 									onclick={() => (sizeClass = 'B')}
-									class="rounded-r border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
+									class="border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
 									'B'
 										? 'bg-primary text-primary-foreground'
 										: 'text-muted-foreground hover:bg-muted'}">Class B</button
+								>
+								<button
+									onclick={() => (sizeClass = 'Aero')}
+									class="rounded-r border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
+									'Aero'
+										? 'bg-primary text-primary-foreground'
+										: 'text-muted-foreground hover:bg-muted'}">Aero</button
 								>
 							</div>
 						</div>
@@ -332,7 +353,7 @@
 										<div
 											class="absolute left-0 right-0 top-full z-10 mt-1 max-h-48 overflow-auto rounded-md border border-border bg-card py-1 shadow-md"
 										>
-											{#if sizeClass === 'A'}
+											{#if sizeClass === 'A' || sizeClass === 'Aero'}
 												{#each csOptions as opt (opt.cs)}
 													<button
 														type="button"
@@ -512,9 +533,7 @@
 							<div class="mb-3">
 								<label for="eccentricity-slider" class="flex items-center justify-between text-xs">
 									<span class="text-muted-foreground">Piston eccentricity</span>
-									<span class="font-mono text-foreground"
-										>{(eccentricity * 100).toFixed(0)}%</span
-									>
+									<span class="font-mono text-foreground">{(eccentricity * 100).toFixed(0)}%</span>
 								</label>
 								<input
 									id="eccentricity-slider"
@@ -692,14 +711,19 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="fixed inset-0 z-[2000] flex items-center justify-center bg-black/70 transition-opacity"
-		onclick={(e) => { if (e.target === e.currentTarget) closeDisclaimer(); }}
-		onkeydown={(e) => { if (e.key === 'Escape') closeDisclaimer(); }}
+		onclick={(e) => {
+			if (e.target === e.currentTarget) closeDisclaimer();
+		}}
+		onkeydown={(e) => {
+			if (e.key === 'Escape') closeDisclaimer();
+		}}
 	>
 		<div class="w-[90%] max-w-[500px] rounded-xl border border-border bg-card p-8 shadow-lg">
 			<h2 class="mb-4 text-2xl font-semibold text-foreground">Disclaimer</h2>
 			<p class="mb-4 leading-relaxed text-muted-foreground">
 				These tools are provided for educational and reference purposes only. The author accepts no
-				liability for any decisions, designs, or outcomes resulting from the use of these calculators.
+				liability for any decisions, designs, or outcomes resulting from the use of these
+				calculators.
 			</p>
 			<p class="mb-4 leading-relaxed text-muted-foreground">
 				Always verify results independently and consult qualified professionals for critical
@@ -716,7 +740,9 @@
 {/if}
 
 <!-- Status bar -->
-<footer class="fixed bottom-0 left-0 right-0 z-50 flex items-center border-t border-border bg-background py-4">
+<footer
+	class="fixed bottom-0 left-0 right-0 z-50 flex items-center border-t border-border bg-background py-4"
+>
 	<div class="relative mx-auto flex w-full max-w-5xl items-center justify-center px-8">
 		<div class="absolute left-8">
 			<button
@@ -726,7 +752,11 @@
 				title="Disclaimer"
 			>
 				<svg class="size-4" fill="currentColor" viewBox="0 0 20 20">
-					<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+					<path
+						fill-rule="evenodd"
+						d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+						clip-rule="evenodd"
+					/>
 				</svg>
 			</button>
 		</div>
@@ -740,7 +770,9 @@
 				class="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-300 hover:text-primary"
 			>
 				<svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
-					<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+					<path
+						d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
+					/>
 				</svg>
 				GitHub
 			</a>
@@ -751,7 +783,9 @@
 				class="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-300 hover:text-primary"
 			>
 				<svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
-					<path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z" />
+					<path
+						d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"
+					/>
 				</svg>
 				LinkedIn
 			</a>
@@ -779,7 +813,11 @@
 					</svg>
 				{:else}
 					<svg class="size-4" fill="currentColor" viewBox="0 0 20 20">
-						<path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clip-rule="evenodd" />
+						<path
+							fill-rule="evenodd"
+							d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+							clip-rule="evenodd"
+						/>
 					</svg>
 				{/if}
 			</button>
