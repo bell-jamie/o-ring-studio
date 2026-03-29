@@ -88,14 +88,14 @@
 			type="number"
 			step="0.001"
 			bind:value={upperTol}
-			class="{inputBase} w-18"
+			class="{inputBase} w-22"
 		/>
 		<span class="text-xs text-muted-foreground">&minus;</span>
 		<input
 			type="number"
 			step="0.001"
 			bind:value={lowerTol}
-			class="{inputBase} w-18"
+			class="{inputBase} w-22"
 		/>
 		<span class="w-6 shrink-0 text-xs text-muted-foreground">mm</span>
 	</div>

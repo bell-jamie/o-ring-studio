@@ -157,6 +157,42 @@
 	let showEccentricity = $state(false);
 	let showDetails = $state(false);
 
+	// Dark mode
+	let dark = $state(false);
+
+	function initTheme() {
+		const stored = localStorage.getItem('theme');
+		if (stored === 'dark' || (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+			dark = true;
+		}
+		applyTheme();
+	}
+
+	function applyTheme() {
+		document.documentElement.classList.toggle('dark', dark);
+	}
+
+	function toggleTheme() {
+		dark = !dark;
+		localStorage.setItem('theme', dark ? 'dark' : 'light');
+		applyTheme();
+	}
+
+	// Disclaimer modal
+	let disclaimerOpen = $state(false);
+
+	$effect(() => {
+		initTheme();
+		if (!localStorage.getItem('disclaimerSeen')) {
+			disclaimerOpen = true;
+		}
+	});
+
+	function closeDisclaimer() {
+		disclaimerOpen = false;
+		localStorage.setItem('disclaimerSeen', 'true');
+	}
+
 	// Combobox state
 	let csOpen = $state(false);
 	let idOpen = $state(false);
@@ -186,14 +222,11 @@
 	const extrusionGapCriteria = $derived<AcceptanceCriteria>({ min: 0, max: extrusionGapMax });
 </script>
 
-<div class="min-h-screen bg-background">
+<div class="min-h-screen bg-background pb-24">
 	<!-- Header -->
 	<header class="border-b border-border bg-card">
 		<div class="mx-auto max-w-5xl px-6 py-5">
-			<div>
-				<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
-				<!-- <p class="mt-0.5 text-sm text-muted-foreground">Piston seal tolerance-stack analysis</p> -->
-			</div>
+			<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
 		</div>
 	</header>
 
@@ -364,14 +397,14 @@
 									type="number"
 									step="0.001"
 									bind:value={inputs.oRingCS.upperTol}
-									class="w-18 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+									class="w-22 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 								/>
 								<span class="text-xs text-muted-foreground">&minus;</span>
 								<input
 									type="number"
 									step="0.001"
 									bind:value={inputs.oRingCS.lowerTol}
-									class="w-18 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+									class="w-22 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 								/>
 								<span class="w-6 shrink-0 text-xs text-muted-foreground">mm</span>
 							</div>
@@ -423,14 +456,14 @@
 									type="number"
 									step="0.001"
 									bind:value={inputs.oRingID.upperTol}
-									class="w-18 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+									class="w-22 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 								/>
 								<span class="text-xs text-muted-foreground">&minus;</span>
 								<input
 									type="number"
 									step="0.001"
 									bind:value={inputs.oRingID.lowerTol}
-									class="w-18 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+									class="w-22 rounded-md border border-input bg-background px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
 								/>
 								<span class="w-6 shrink-0 text-xs text-muted-foreground">mm</span>
 							</div>
@@ -653,3 +686,103 @@
 		</section>
 	</main>
 </div>
+
+<!-- Disclaimer modal -->
+{#if disclaimerOpen}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="fixed inset-0 z-[2000] flex items-center justify-center bg-black/70 transition-opacity"
+		onclick={(e) => { if (e.target === e.currentTarget) closeDisclaimer(); }}
+		onkeydown={(e) => { if (e.key === 'Escape') closeDisclaimer(); }}
+	>
+		<div class="w-[90%] max-w-[500px] rounded-xl border border-border bg-card p-8 shadow-lg">
+			<h2 class="mb-4 text-2xl font-semibold text-foreground">Disclaimer</h2>
+			<p class="mb-4 leading-relaxed text-muted-foreground">
+				These tools are provided for educational and reference purposes only. The author accepts no
+				liability for any decisions, designs, or outcomes resulting from the use of these calculators.
+			</p>
+			<p class="mb-4 leading-relaxed text-muted-foreground">
+				Always verify results independently and consult qualified professionals for critical
+				engineering applications.
+			</p>
+			<button
+				onclick={closeDisclaimer}
+				class="mt-2 w-full rounded-md bg-primary px-4 py-3 font-semibold text-primary-foreground transition-colors hover:brightness-90"
+			>
+				I Understand
+			</button>
+		</div>
+	</div>
+{/if}
+
+<!-- Status bar -->
+<footer class="fixed bottom-0 left-0 right-0 z-50 flex items-center border-t border-border bg-background py-4">
+	<div class="relative mx-auto flex w-full max-w-5xl items-center justify-center px-8">
+		<div class="absolute left-8">
+			<button
+				onclick={() => (disclaimerOpen = true)}
+				class="flex items-center justify-center rounded-md border border-border px-2.5 py-1.5 text-muted-foreground transition-all duration-300 hover:border-primary hover:bg-primary/10 hover:text-primary"
+				aria-label="View disclaimer"
+				title="Disclaimer"
+			>
+				<svg class="size-4" fill="currentColor" viewBox="0 0 20 20">
+					<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+				</svg>
+			</button>
+		</div>
+		<div class="flex flex-wrap items-center justify-center gap-3">
+			<span class="text-sm text-muted-foreground">&copy; 2025 James Bell</span>
+			<span class="select-none text-sm text-muted-foreground/40">&middot;</span>
+			<a
+				href="https://github.com/bell-jamie"
+				target="_blank"
+				rel="noopener noreferrer"
+				class="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-300 hover:text-primary"
+			>
+				<svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
+					<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
+				</svg>
+				GitHub
+			</a>
+			<a
+				href="https://www.linkedin.com/in/bell-jamie/"
+				target="_blank"
+				rel="noopener noreferrer"
+				class="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-300 hover:text-primary"
+			>
+				<svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
+					<path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z" />
+				</svg>
+				LinkedIn
+			</a>
+			<a
+				href="mailto:james.m.h.bell@icloud.com"
+				class="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors duration-300 hover:text-primary"
+			>
+				<svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+					<polyline points="22,6 12,13 2,6" />
+				</svg>
+				Email
+			</a>
+		</div>
+		<div class="absolute right-8">
+			<button
+				onclick={toggleTheme}
+				class="flex items-center justify-center rounded-md border border-border px-2.5 py-1.5 text-muted-foreground transition-all duration-300 hover:border-primary hover:bg-primary/10 hover:text-primary"
+				aria-label="Toggle dark mode"
+				title="Toggle theme"
+			>
+				{#if dark}
+					<svg class="size-4" fill="currentColor" viewBox="0 0 20 20">
+						<path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+					</svg>
+				{:else}
+					<svg class="size-4" fill="currentColor" viewBox="0 0 20 20">
+						<path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clip-rule="evenodd" />
+					</svg>
+				{/if}
+			</button>
+		</div>
+	</div>
+</footer>
