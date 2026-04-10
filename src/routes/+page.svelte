@@ -1,11 +1,59 @@
 <script lang="ts">
-	import type { PistonSealInputs, PistonSealResults, AcceptanceCriteria } from '$lib/types';
-	import { calculateAll, generateHousing, applyEccentricity } from '$lib/calculations';
+	import type { PistonSealInputs, PistonSealResults, FaceSealInputs, FaceSealResults, AcceptanceCriteria, SealType } from '$lib/types';
+	import { calculateAll, calculateFaceSeal, generateHousing, generateFromBore, generateFaceSealFromORing, generateFaceSealFromGrooveID, applyEccentricity } from '$lib/calculations';
 	import { lookupCSTolerance, lookupIDTolerance, type OringClass } from '$lib/iso3601-tol';
 	import TolerancedInput from '$lib/components/TolerancedInput.svelte';
 	import ResultRow from '$lib/components/ResultRow.svelte';
 	import OringSimulator from '$lib/components/OringSimulator.svelte';
 	import { ISO3601_SIZES, type SizeClass } from '$lib/iso3601-size';
+
+	// Seal type toggle
+	let sealType = $state<SealType>('piston');
+
+	/** Get standard o-ring sizes for a given CS value and the current size class */
+	function getSizesForCS(cs: number): { id: number }[] {
+		// Determine which ISO table keys to search based on sizeClass
+		const keys: SizeClass[] =
+			sizeClass === 'A' ? ['A'] : sizeClass === 'Aero' ? ['Aero'] : ['B-in', 'B-mm'];
+		for (const key of keys) {
+			const group = ISO3601_SIZES[key].find((g) => Math.abs(g.cs - cs) < 0.001);
+			if (group) return group.sizes;
+		}
+		return [];
+	}
+
+	/** Apply results from generateFromBore to the input fields (bore is preserved) */
+	function applyGenerated(result: ReturnType<typeof generateFromBore>) {
+		if (!result) return;
+		inputs.pistonDia.nominal = String(result.pistonDia);
+		inputs.grooveDia.nominal = String(result.grooveDia);
+		inputs.grooveWidth.nominal = String(result.grooveWidth);
+		inputs.grooveRadii.nominal = '0.3';
+		inputs.oRingID.nominal = String(result.oRingID);
+	}
+
+	function setSealType(newType: SealType) {
+		if (newType === sealType) return;
+		const prevType = sealType;
+		sealType = newType;
+
+		// Auto-recalculate dimensions when switching between piston and rod
+		if ((prevType === 'piston' || prevType === 'rod') && (newType === 'piston' || newType === 'rod')) {
+			const bore = parseFloat(inputs.boreDia.nominal);
+			const cs = parseFloat(inputs.oRingCS.nominal);
+			if (!isNaN(bore) && bore > 0 && !isNaN(cs) && cs > 0) {
+				const sizes = getSizesForCS(cs);
+				const result = generateFromBore(bore, cs, newType, sizes);
+				if (result) {
+					// Keep bore as-is, update everything else
+					inputs.pistonDia.nominal = String(result.pistonDia);
+					inputs.grooveDia.nominal = String(result.grooveDia);
+					inputs.grooveWidth.nominal = String(result.grooveWidth);
+					inputs.oRingID.nominal = String(result.oRingID);
+				}
+			}
+		}
+	}
 
 	// Input state — strings for binding to number inputs
 	let inputs = $state({
@@ -17,6 +65,18 @@
 		oRingCS: { nominal: '', upperTol: '', lowerTol: '' },
 		oRingID: { nominal: '', upperTol: '', lowerTol: '' }
 	});
+
+	// Face seal input state
+	let faceInputs = $state({
+		grooveOD: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
+		grooveID: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
+		housingHeight: { nominal: '', upperTol: '0.05', lowerTol: '0.05' },
+		grooveRadii: { nominal: '', upperTol: '0.1', lowerTol: '0.1' }
+	});
+
+	// Active o-ring inputs — shared between all seal types
+	const activeORingCS = $derived(inputs.oRingCS);
+	const activeORingID = $derived(inputs.oRingID);
 
 	// ISO 3601 auto-populate tolerances when nominal or class changes
 	$effect(() => {
@@ -80,13 +140,32 @@
 		} as PistonSealInputs;
 	});
 
-	const results = $derived(parsed() ? calculateAll(parsed()!) : null);
+	const results = $derived(parsed() ? calculateAll(parsed()!, sealType) : null);
+
+	// Face seal parsing
+	const faceParsed = $derived(() => {
+		const grooveOD = parseDim(faceInputs.grooveOD);
+		const grooveID = parseDim(faceInputs.grooveID);
+		const housingHeight = parseDim(faceInputs.housingHeight);
+		const grooveRadii = parseDim(faceInputs.grooveRadii);
+		const oRingCS = parseDim(inputs.oRingCS);
+		const oRingID = parseDim(inputs.oRingID);
+		if (!grooveOD || !grooveID || !housingHeight || !grooveRadii || !oRingCS || !oRingID)
+			return null;
+		return { grooveOD, grooveID, housingHeight, grooveRadii, oRingCS, oRingID } as FaceSealInputs;
+	});
+	const faceResults = $derived(faceParsed() ? calculateFaceSeal(faceParsed()!) : null);
+
+	// Unified results check — are there results for the active seal type?
+	const hasResults = $derived(sealType === 'face' ? faceResults !== null : results !== null);
 
 	// Standard size — A/B/Aero toggle
 	let sizeClass = $state<'A' | 'B' | 'Aero'>('A');
 
 	// Map UI toggle to OringClass for tolerance lookups
-	const oringClass = $derived<OringClass>(sizeClass === 'B' ? 'B' : sizeClass === 'Aero' ? 'Aero' : 'A');
+	const oringClass = $derived<OringClass>(
+		sizeClass === 'B' ? 'B' : sizeClass === 'Aero' ? 'Aero' : 'A'
+	);
 
 	// CS options: Class A uses INCH_SIZES directly, Class B merges inch + metric with labels
 	interface CSOption {
@@ -152,16 +231,68 @@
 		return !isNaN(cs) && cs > 0 && !isNaN(id) && id > 0;
 	});
 
+	const canGenerateFromBore = $derived(() => {
+		const bore = parseFloat(inputs.boreDia.nominal);
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		return !isNaN(bore) && bore > 0 && !isNaN(cs) && cs > 0;
+	});
+
 	function onGenerate() {
 		const cs = parseFloat(inputs.oRingCS.nominal);
 		const id = parseFloat(inputs.oRingID.nominal);
 		if (isNaN(cs) || isNaN(id)) return;
-		const h = generateHousing(cs, id, 5, 20, 65);
+		const h = generateHousing(cs, id, 5, 20, 65, 0.3, sealType);
 		inputs.grooveRadii.nominal = '0.3';
 		inputs.boreDia.nominal = String(h.boreDia);
 		inputs.pistonDia.nominal = String(h.pistonDia);
 		inputs.grooveDia.nominal = String(h.grooveDia);
 		inputs.grooveWidth.nominal = String(h.grooveWidth);
+	}
+
+	function onGenerateFromBore() {
+		const bore = parseFloat(inputs.boreDia.nominal);
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		if (isNaN(bore) || isNaN(cs)) return;
+		const sizes = getSizesForCS(cs);
+		const result = generateFromBore(bore, cs, sealType, sizes);
+		if (result) applyGenerated(result);
+	}
+
+	// Face seal generate functions
+	const canFaceGenerateFromORing = $derived(() => {
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		const id = parseFloat(inputs.oRingID.nominal);
+		return !isNaN(cs) && cs > 0 && !isNaN(id) && id > 0;
+	});
+
+	const canFaceGenerateFromGrooveID = $derived(() => {
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		const gid = parseFloat(faceInputs.grooveID.nominal);
+		return !isNaN(cs) && cs > 0 && !isNaN(gid) && gid > 0;
+	});
+
+	function onFaceGenerateFromORing() {
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		const id = parseFloat(inputs.oRingID.nominal);
+		if (isNaN(cs) || isNaN(id)) return;
+		const result = generateFaceSealFromORing(cs, id);
+		faceInputs.grooveOD.nominal = String(result.grooveOD);
+		faceInputs.grooveID.nominal = String(result.grooveID);
+		faceInputs.housingHeight.nominal = String(result.housingHeight);
+		faceInputs.grooveRadii.nominal = '0.3';
+	}
+
+	function onFaceGenerateFromGrooveID() {
+		const cs = parseFloat(inputs.oRingCS.nominal);
+		const gid = parseFloat(faceInputs.grooveID.nominal);
+		if (isNaN(cs) || isNaN(gid)) return;
+		const sizes = getSizesForCS(cs);
+		const result = generateFaceSealFromGrooveID(cs, gid, sizes);
+		if (!result) return;
+		faceInputs.grooveOD.nominal = String(result.grooveOD);
+		faceInputs.housingHeight.nominal = String(result.housingHeight);
+		faceInputs.grooveRadii.nominal = '0.3';
+		inputs.oRingID.nominal = String(result.oRingID);
 	}
 
 	let eccentricity = $state(0);
@@ -216,6 +347,21 @@
 		close();
 	}
 
+	function clearAll() {
+		for (const key of Object.keys(inputs) as (keyof typeof inputs)[]) {
+			inputs[key].nominal = '';
+			if (key !== 'grooveWidth' && key !== 'grooveRadii') {
+				inputs[key].upperTol = '';
+				inputs[key].lowerTol = '';
+			}
+		}
+		for (const key of Object.keys(faceInputs) as (keyof typeof faceInputs)[]) {
+			faceInputs[key].nominal = '';
+		}
+		eccentricity = 0;
+		showEccentricity = false;
+	}
+
 	const eccResults = $derived(
 		results && parsed() && showEccentricity
 			? applyEccentricity(results, parsed()!, eccentricity)
@@ -233,14 +379,46 @@
 		compression: { min: 10, max: 35 },
 		fill: { min: 0, max: 85 }
 	};
+	const FACE_CRITERIA: Record<string, AcceptanceCriteria> = {
+		stretch: { min: -2, max: 3 },
+		compression: { min: 13, max: 36 },
+		fill: { min: 0, max: 85 }
+	};
+	const activeCriteria = $derived(sealType === 'face' ? FACE_CRITERIA : CRITERIA);
 	const extrusionGapCriteria = $derived<AcceptanceCriteria>({ min: 0, max: extrusionGapMax });
 </script>
 
 <div class="min-h-screen bg-background pb-24">
 	<!-- Header -->
 	<header class="border-b border-border bg-card">
-		<div class="mx-auto max-w-5xl px-6 py-5">
+		<div class="mx-auto max-w-5xl px-6 py-5 flex items-center justify-between">
 			<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
+			<div class="flex items-center gap-3">
+			<button
+				onclick={clearAll}
+				class="rounded border border-input px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+			>Clear</button>
+			<div class="flex rounded border border-input text-xs font-medium">
+				<button
+					onclick={() => setSealType('piston')}
+					class="rounded-l px-3 py-1 transition-colors {sealType === 'piston'
+						? 'bg-primary text-primary-foreground'
+						: 'text-muted-foreground hover:bg-muted'}"
+				>Piston Seal</button>
+				<button
+					onclick={() => setSealType('rod')}
+					class="border-l border-input px-3 py-1 transition-colors {sealType === 'rod'
+						? 'bg-primary text-primary-foreground'
+						: 'text-muted-foreground hover:bg-muted'}"
+				>Rod Seal</button>
+				<button
+					onclick={() => setSealType('face')}
+					class="rounded-r border-l border-input px-3 py-1 transition-colors {sealType === 'face'
+						? 'bg-primary text-primary-foreground'
+						: 'text-muted-foreground hover:bg-muted'}"
+				>Face Seal</button>
+			</div>
+			</div>
 		</div>
 	</header>
 
@@ -251,49 +429,82 @@
 				<!-- Hardware dimensions -->
 				<section class="rounded-xl border border-border bg-card p-5">
 					<h2 class="mb-4 text-sm font-medium text-foreground">Hardware Dimensions</h2>
-					<div class="space-y-4">
-						<TolerancedInput
-							label="Bore Diameter"
-							placeholder="-"
-							fitType="hole"
-							defaultFitClass="H8"
-							bind:nominal={inputs.boreDia.nominal}
-							bind:upperTol={inputs.boreDia.upperTol}
-							bind:lowerTol={inputs.boreDia.lowerTol}
-						/>
-						<TolerancedInput
-							label="Piston Diameter"
-							placeholder="-"
-							fitType="shaft"
-							defaultFitClass="f7"
-							bind:nominal={inputs.pistonDia.nominal}
-							bind:upperTol={inputs.pistonDia.upperTol}
-							bind:lowerTol={inputs.pistonDia.lowerTol}
-						/>
-						<TolerancedInput
-							label="Groove Diameter"
-							placeholder="-"
-							fitType="shaft"
-							defaultFitClass="h9"
-							bind:nominal={inputs.grooveDia.nominal}
-							bind:upperTol={inputs.grooveDia.upperTol}
-							bind:lowerTol={inputs.grooveDia.lowerTol}
-						/>
-						<TolerancedInput
-							label="Groove Width"
-							placeholder="-"
-							bind:nominal={inputs.grooveWidth.nominal}
-							bind:upperTol={inputs.grooveWidth.upperTol}
-							bind:lowerTol={inputs.grooveWidth.lowerTol}
-						/>
-						<TolerancedInput
-							label="Groove Radii"
-							placeholder="-"
-							bind:nominal={inputs.grooveRadii.nominal}
-							bind:upperTol={inputs.grooveRadii.upperTol}
-							bind:lowerTol={inputs.grooveRadii.lowerTol}
-						/>
-					</div>
+					{#if sealType === 'face'}
+						<div class="space-y-4">
+							<TolerancedInput
+								label="Groove Outside Diameter"
+								placeholder="-"
+								bind:nominal={faceInputs.grooveOD.nominal}
+								bind:upperTol={faceInputs.grooveOD.upperTol}
+								bind:lowerTol={faceInputs.grooveOD.lowerTol}
+							/>
+							<TolerancedInput
+								label="Groove Inside Diameter"
+								placeholder="-"
+								bind:nominal={faceInputs.grooveID.nominal}
+								bind:upperTol={faceInputs.grooveID.upperTol}
+								bind:lowerTol={faceInputs.grooveID.lowerTol}
+							/>
+							<TolerancedInput
+								label="Housing Height"
+								placeholder="-"
+								bind:nominal={faceInputs.housingHeight.nominal}
+								bind:upperTol={faceInputs.housingHeight.upperTol}
+								bind:lowerTol={faceInputs.housingHeight.lowerTol}
+							/>
+							<TolerancedInput
+								label="Groove Radii"
+								placeholder="-"
+								bind:nominal={faceInputs.grooveRadii.nominal}
+								bind:upperTol={faceInputs.grooveRadii.upperTol}
+								bind:lowerTol={faceInputs.grooveRadii.lowerTol}
+							/>
+						</div>
+					{:else}
+						<div class="space-y-4">
+							<TolerancedInput
+								label="Bore Diameter"
+								placeholder="-"
+								fitType="hole"
+								defaultFitClass="H8"
+								bind:nominal={inputs.boreDia.nominal}
+								bind:upperTol={inputs.boreDia.upperTol}
+								bind:lowerTol={inputs.boreDia.lowerTol}
+							/>
+							<TolerancedInput
+								label={sealType === 'piston' ? 'Piston Diameter' : 'Rod Diameter'}
+								placeholder="-"
+								fitType="shaft"
+								defaultFitClass="f7"
+								bind:nominal={inputs.pistonDia.nominal}
+								bind:upperTol={inputs.pistonDia.upperTol}
+								bind:lowerTol={inputs.pistonDia.lowerTol}
+							/>
+							<TolerancedInput
+								label="Groove Diameter"
+								placeholder="-"
+								fitType={sealType === 'piston' ? 'shaft' : 'hole'}
+								defaultFitClass={sealType === 'piston' ? 'h9' : 'H9'}
+								bind:nominal={inputs.grooveDia.nominal}
+								bind:upperTol={inputs.grooveDia.upperTol}
+								bind:lowerTol={inputs.grooveDia.lowerTol}
+							/>
+							<TolerancedInput
+								label="Groove Width"
+								placeholder="-"
+								bind:nominal={inputs.grooveWidth.nominal}
+								bind:upperTol={inputs.grooveWidth.upperTol}
+								bind:lowerTol={inputs.grooveWidth.lowerTol}
+							/>
+							<TolerancedInput
+								label="Groove Radii"
+								placeholder="-"
+								bind:nominal={inputs.grooveRadii.nominal}
+								bind:upperTol={inputs.grooveRadii.upperTol}
+								bind:lowerTol={inputs.grooveRadii.lowerTol}
+							/>
+						</div>
+					{/if}
 				</section>
 
 				<!-- O-Ring dimensions -->
@@ -317,8 +528,7 @@
 								>
 								<button
 									onclick={() => (sizeClass = 'B')}
-									class="border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
-									'B'
+									class="border-l border-input px-2 py-0.5 transition-colors {sizeClass === 'B'
 										? 'bg-primary text-primary-foreground'
 										: 'text-muted-foreground hover:bg-muted'}">Class B</button
 								>
@@ -327,7 +537,7 @@
 									class="rounded-r border-l border-input px-2 py-0.5 transition-colors {sizeClass ===
 									'Aero'
 										? 'bg-primary text-primary-foreground'
-										: 'text-muted-foreground hover:bg-muted'}">Aero</button
+										: 'text-muted-foreground hover:bg-muted'}">Aerospace</button
 								>
 							</div>
 						</div>
@@ -490,13 +700,44 @@
 							</div>
 						</div>
 
-						{#if canGenerate()}
-							<button
-								onclick={onGenerate}
-								class="mt-1 w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
-							>
-								Auto-generate housing
-							</button>
+						{#if sealType === 'face'}
+							<div class="mt-1 flex gap-2">
+								{#if canFaceGenerateFromGrooveID()}
+									<button
+										onclick={onFaceGenerateFromGrooveID}
+										class="flex-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+									>
+										Generate from groove ID
+									</button>
+								{/if}
+								{#if canFaceGenerateFromORing()}
+									<button
+										onclick={onFaceGenerateFromORing}
+										class="flex-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+									>
+										Generate from o-ring
+									</button>
+								{/if}
+							</div>
+						{:else}
+							<div class="mt-1 flex gap-2">
+								{#if canGenerateFromBore()}
+									<button
+										onclick={onGenerateFromBore}
+										class="flex-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+									>
+										Generate from bore
+									</button>
+								{/if}
+								{#if canGenerate()}
+									<button
+										onclick={onGenerate}
+										class="flex-1 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+									>
+										Generate from o-ring
+									</button>
+								{/if}
+							</div>
 						{/if}
 					</div>
 				</section>
@@ -507,32 +748,52 @@
 				<section class="rounded-xl border border-border bg-card p-5">
 					<div class="mb-4 flex items-center gap-2">
 						<h2 class="text-sm font-medium text-foreground">Results</h2>
-						<button
-							type="button"
-							onclick={() => {
-								showEccentricity = !showEccentricity;
-								if (!showEccentricity) eccentricity = 0;
-							}}
-							class="ml-auto rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors {showEccentricity
-								? 'border-primary bg-primary/10 text-primary'
-								: 'border-input text-muted-foreground hover:border-foreground/20 hover:text-foreground'}"
-						>
-							{showEccentricity ? 'Non-concentric' : 'Concentric'}
-						</button>
+						{#if sealType !== 'face'}
+							<button
+								type="button"
+								onclick={() => {
+									showEccentricity = !showEccentricity;
+									if (!showEccentricity) eccentricity = 0;
+								}}
+								class="ml-auto rounded-md border px-2 py-0.5 text-[10px] font-medium transition-colors {showEccentricity
+									? 'border-primary bg-primary/10 text-primary'
+									: 'border-input text-muted-foreground hover:border-foreground/20 hover:text-foreground'}"
+							>
+								{showEccentricity ? 'Non-concentric' : 'Concentric'}
+							</button>
+						{/if}
 					</div>
 
-					{#if !results}
+					{#if !hasResults}
 						<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
 							<p class="text-sm text-muted-foreground">
 								Enter all dimensions with tolerances to see results.
 							</p>
 						</div>
-					{:else}
+					{:else if sealType === 'face' && faceResults}
+						<div class="space-y-3">
+							<ResultRow
+								label="O-Ring Stretch"
+								result={faceResults.stretch}
+								criteria={FACE_CRITERIA.stretch}
+							/>
+							<ResultRow
+								label="Compression"
+								result={faceResults.compression}
+								criteria={FACE_CRITERIA.compression}
+							/>
+							<ResultRow
+								label="Groove Fill"
+								result={faceResults.fill}
+								criteria={FACE_CRITERIA.fill}
+							/>
+						</div>
+					{:else if results}
 						{#if showEccentricity}
 							<!-- Eccentricity slider -->
 							<div class="mb-3">
 								<label for="eccentricity-slider" class="flex items-center justify-between text-xs">
-									<span class="text-muted-foreground">Piston eccentricity</span>
+									<span class="text-muted-foreground">{sealType === 'piston' ? 'Piston' : 'Rod'} eccentricity</span>
 									<span class="font-mono text-foreground">{(eccentricity * 100).toFixed(0)}%</span>
 								</label>
 								<input
@@ -584,7 +845,7 @@
 					{/if}
 				</section>
 
-				{#if results}
+				{#if hasResults}
 					<button
 						onclick={() => (showDetails = !showDetails)}
 						class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs text-muted-foreground transition-colors hover:bg-muted"
@@ -600,41 +861,64 @@
 					</button>
 				{/if}
 
-				{#if showDetails && results}
+				{#if showDetails && hasResults}
 					<!-- Derived dimensions -->
 					<section class="rounded-xl border border-border bg-card p-5">
 						<h2 class="mb-3 text-sm font-medium text-foreground">Derived Dimensions</h2>
 						<div class="space-y-2">
-							<div
-								class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
-							>
-								<span class="text-sm text-muted-foreground">Groove Depth</span>
-								<span class="font-mono text-xs text-foreground">
-									{results.grooveDepth.min.toFixed(3)} /
-									<span class="font-semibold">{results.grooveDepth.nominal.toFixed(3)}</span>
-									/ {results.grooveDepth.max.toFixed(3)} mm
-								</span>
-							</div>
-							<div
-								class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
-							>
-								<span class="text-sm text-muted-foreground">Installed Height</span>
-								<span class="font-mono text-xs text-foreground">
-									{results.installedHeight.min.toFixed(3)} /
-									<span class="font-semibold">{results.installedHeight.nominal.toFixed(3)}</span>
-									/ {results.installedHeight.max.toFixed(3)} mm
-								</span>
-							</div>
-							<div
-								class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
-							>
-								<span class="text-sm text-muted-foreground">CS incl. stretch</span>
-								<span class="font-mono text-xs text-foreground">
-									{results.stretchedCS.min.toFixed(3)} /
-									<span class="font-semibold">{results.stretchedCS.nominal.toFixed(3)}</span>
-									/ {results.stretchedCS.max.toFixed(3)} mm
-								</span>
-							</div>
+							{#if sealType === 'face' && faceResults}
+								<div
+									class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+								>
+									<span class="text-sm text-muted-foreground">Groove Width</span>
+									<span class="font-mono text-xs text-foreground">
+										{faceResults.grooveWidth.min.toFixed(3)} /
+										<span class="font-semibold">{faceResults.grooveWidth.nominal.toFixed(3)}</span>
+										/ {faceResults.grooveWidth.max.toFixed(3)} mm
+									</span>
+								</div>
+								<div
+									class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+								>
+									<span class="text-sm text-muted-foreground">CS incl. stretch</span>
+									<span class="font-mono text-xs text-foreground">
+										{faceResults.stretchedCS.min.toFixed(3)} /
+										<span class="font-semibold">{faceResults.stretchedCS.nominal.toFixed(3)}</span>
+										/ {faceResults.stretchedCS.max.toFixed(3)} mm
+									</span>
+								</div>
+							{:else if results}
+								<div
+									class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+								>
+									<span class="text-sm text-muted-foreground">Groove Depth</span>
+									<span class="font-mono text-xs text-foreground">
+										{results.grooveDepth.min.toFixed(3)} /
+										<span class="font-semibold">{results.grooveDepth.nominal.toFixed(3)}</span>
+										/ {results.grooveDepth.max.toFixed(3)} mm
+									</span>
+								</div>
+								<div
+									class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+								>
+									<span class="text-sm text-muted-foreground">Installed Height</span>
+									<span class="font-mono text-xs text-foreground">
+										{results.installedHeight.min.toFixed(3)} /
+										<span class="font-semibold">{results.installedHeight.nominal.toFixed(3)}</span>
+										/ {results.installedHeight.max.toFixed(3)} mm
+									</span>
+								</div>
+								<div
+									class="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+								>
+									<span class="text-sm text-muted-foreground">CS incl. stretch</span>
+									<span class="font-mono text-xs text-foreground">
+										{results.stretchedCS.min.toFixed(3)} /
+										<span class="font-semibold">{results.stretchedCS.nominal.toFixed(3)}</span>
+										/ {results.stretchedCS.max.toFixed(3)} mm
+									</span>
+								</div>
+							{/if}
 						</div>
 					</section>
 
@@ -645,13 +929,21 @@
 							<div class="flex justify-between gap-4">
 								<dt>Stretch %</dt>
 								<dd class="font-mono text-right text-foreground">
-									(grooveDia &minus; ID) / ID &times; 100
+									{#if sealType === 'face'}
+										(centerline &minus; ID) / ID &times; 100
+									{:else}
+										(grooveDia &minus; ID) / ID &times; 100
+									{/if}
 								</dd>
 							</div>
 							<div class="flex justify-between gap-4">
 								<dt>Compression %</dt>
 								<dd class="font-mono text-right text-foreground">
-									(CS &minus; installedHt) / CS &times; 100
+									{#if sealType === 'face'}
+										(CS &minus; housingHt) / CS &times; 100
+									{:else}
+										(CS &minus; installedHt) / CS &times; 100
+									{/if}
 								</dd>
 							</div>
 							<div class="flex justify-between gap-4">
@@ -660,24 +952,51 @@
 									&pi;(CS/2)&sup2; / grooveArea &times; 100
 								</dd>
 							</div>
-							<div class="flex justify-between gap-4">
-								<dt>Groove depth</dt>
-								<dd class="font-mono text-right text-foreground">
-									(pistonDia &minus; grooveDia) / 2
-								</dd>
-							</div>
-							<div class="flex justify-between gap-4">
-								<dt>Installed height</dt>
-								<dd class="font-mono text-right text-foreground">
-									(boreDia &minus; grooveDia) / 2
-								</dd>
-							</div>
-							<div class="flex justify-between gap-4">
-								<dt>Extrusion gap</dt>
-								<dd class="font-mono text-right text-foreground">
-									(boreDia &minus; pistonDia) / 2
-								</dd>
-							</div>
+							{#if sealType === 'face'}
+								<div class="flex justify-between gap-4">
+									<dt>Groove width</dt>
+									<dd class="font-mono text-right text-foreground">
+										(grooveOD &minus; grooveID) / 2
+									</dd>
+								</div>
+								<div class="flex justify-between gap-4">
+									<dt>Centerline</dt>
+									<dd class="font-mono text-right text-foreground">
+										(grooveOD + grooveID) / 2
+									</dd>
+								</div>
+							{:else}
+								<div class="flex justify-between gap-4">
+									<dt>Groove depth</dt>
+									<dd class="font-mono text-right text-foreground">
+										{#if sealType === 'piston'}
+											(pistonDia &minus; grooveDia) / 2
+										{:else}
+											(grooveDia &minus; boreDia) / 2
+										{/if}
+									</dd>
+								</div>
+								<div class="flex justify-between gap-4">
+									<dt>Installed height</dt>
+									<dd class="font-mono text-right text-foreground">
+										{#if sealType === 'piston'}
+											(boreDia &minus; grooveDia) / 2
+										{:else}
+											(grooveDia &minus; rodDia) / 2
+										{/if}
+									</dd>
+								</div>
+								<div class="flex justify-between gap-4">
+									<dt>Extrusion gap</dt>
+									<dd class="font-mono text-right text-foreground">
+										{#if sealType === 'piston'}
+											(boreDia &minus; pistonDia) / 2
+										{:else}
+											(boreDia &minus; rodDia) / 2
+										{/if}
+									</dd>
+								</div>
+							{/if}
 						</dl>
 					</section>
 				{/if}
@@ -688,19 +1007,38 @@
 		<section class="mt-6 rounded-xl border border-border bg-card p-5">
 			<h2 class="mb-4 text-sm font-medium text-foreground">Simulation</h2>
 
-			{#if !results || !parsed()}
-				<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
-					<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
-				</div>
+			{#if sealType === 'face'}
+				{#if !faceResults || !faceParsed()}
+					<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
+						<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
+					</div>
+				{:else}
+					<OringSimulator
+						cs={faceParsed()!.oRingCS.nominal}
+						glandDepth={faceParsed()!.housingHeight.nominal}
+						grooveWidth={faceResults.grooveWidth.nominal}
+						clearance={0}
+						stretchPercent={faceResults.stretch.nominal}
+						grooveRadii={faceParsed()!.grooveRadii.nominal}
+						{sealType}
+					/>
+				{/if}
 			{:else}
-				<OringSimulator
-					cs={parsed()!.oRingCS.nominal}
-					glandDepth={results.installedHeight.nominal}
-					grooveWidth={parsed()!.grooveWidth.nominal}
-					clearance={(parsed()!.boreDia.nominal - parsed()!.pistonDia.nominal) / 2}
-					stretchPercent={results.stretch.nominal}
-					grooveRadii={parsed()!.grooveRadii.nominal}
-				/>
+				{#if !results || !parsed()}
+					<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
+						<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
+					</div>
+				{:else}
+					<OringSimulator
+						cs={parsed()!.oRingCS.nominal}
+						glandDepth={results.installedHeight.nominal}
+						grooveWidth={parsed()!.grooveWidth.nominal}
+						clearance={(parsed()!.boreDia.nominal - parsed()!.pistonDia.nominal) / 2}
+						stretchPercent={results.stretch.nominal}
+						grooveRadii={parsed()!.grooveRadii.nominal}
+						{sealType}
+					/>
+				{/if}
 			{/if}
 		</section>
 	</main>
@@ -761,7 +1099,7 @@
 			</button>
 		</div>
 		<div class="flex flex-wrap items-center justify-center gap-3">
-			<span class="text-sm text-muted-foreground">&copy; 2025 James Bell</span>
+			<span class="text-sm text-muted-foreground">&copy; 2026 James Bell</span>
 			<span class="select-none text-sm text-muted-foreground/40">&middot;</span>
 			<a
 				href="https://github.com/bell-jamie"

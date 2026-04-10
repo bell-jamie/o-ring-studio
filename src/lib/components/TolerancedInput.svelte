@@ -26,8 +26,17 @@
 		defaultFitClass = ''
 	}: Props = $props();
 
-	let fitClass = $state((() => defaultFitClass)());
+	let fitClass = $state(defaultFitClass);
 	let fitError = $state(false);
+
+	// Update fitClass when the default changes (e.g. seal type toggle)
+	let prevDefault = defaultFitClass;
+	$effect(() => {
+		if (defaultFitClass !== prevDefault) {
+			fitClass = defaultFitClass;
+			prevDefault = defaultFitClass;
+		}
+	});
 
 	// Auto-populate tolerances from ISO 286 when nominal or fitClass changes
 	$effect(() => {

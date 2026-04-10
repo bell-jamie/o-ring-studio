@@ -4,6 +4,9 @@ import type {
 	RangeResult,
 	PistonSealInputs,
 	PistonSealResults,
+	FaceSealInputs,
+	FaceSealResults,
+	SealType,
 	Status,
 	AcceptanceCriteria
 } from './types';
@@ -133,17 +136,24 @@ export function calcFill(
 }
 
 /** Master function: all inputs → all results */
-export function calculateAll(inputs: PistonSealInputs): PistonSealResults {
+export function calculateAll(inputs: PistonSealInputs, sealType: SealType = 'piston'): PistonSealResults {
 	const boreDia = resolve(inputs.boreDia);
-	const pistonDia = resolve(inputs.pistonDia);
+	const pistonDia = resolve(inputs.pistonDia); // rodDia for rod seal
 	const grooveDia = resolve(inputs.grooveDia);
 	const grooveWidth = resolve(inputs.grooveWidth);
 	const grooveRadii = resolve(inputs.grooveRadii);
 	const cs = resolve(inputs.oRingCS);
 	const id = resolve(inputs.oRingID);
 
-	const grooveDepth = calcGrooveDepth(pistonDia, grooveDia);
-	const installedHeight = calcInstalledHeight(boreDia, grooveDia);
+	// Piston seal: groove on piston → depth = (piston - groove) / 2, IH = (bore - groove) / 2
+	// Rod seal: groove in housing → depth = (groove - bore) / 2, IH = (groove - rod) / 2
+	const grooveDepth = sealType === 'piston'
+		? calcGrooveDepth(pistonDia, grooveDia)
+		: calcGrooveDepth(grooveDia, boreDia);
+	const installedHeight = sealType === 'piston'
+		? calcInstalledHeight(boreDia, grooveDia)
+		: calcInstalledHeight(grooveDia, pistonDia);
+
 	const stretch = calcStretch(grooveDia, id);
 	const stretchedCS = calcStretchedCS(cs, id, grooveDia);
 	const compression = calcCompression(installedHeight, stretchedCS);
@@ -151,6 +161,44 @@ export function calculateAll(inputs: PistonSealInputs): PistonSealResults {
 	const extrusionGap = calcExtrusionGap(boreDia, pistonDia);
 
 	return { stretch, compression, fill, extrusionGap, installedHeight, grooveDepth, stretchedCS };
+}
+
+/**
+ * Face seal: o-ring in a rectangular groove on a flat face, compressed axially.
+ * Groove centerline = (OD + ID) / 2 — used for stretch calculation.
+ * Groove width = (OD - ID) / 2 — derived, not a direct input.
+ * Housing height = axial gap that compresses the o-ring.
+ */
+export function calculateFaceSeal(inputs: FaceSealInputs): FaceSealResults {
+	const grooveOD = resolve(inputs.grooveOD);
+	const grooveID = resolve(inputs.grooveID);
+	const housingHeight = resolve(inputs.housingHeight);
+	const grooveRadii = resolve(inputs.grooveRadii);
+	const cs = resolve(inputs.oRingCS);
+	const id = resolve(inputs.oRingID);
+
+	// Groove width = (OD - ID) / 2
+	const grooveWidth: RangeResult = {
+		nominal: (grooveOD.nominal - grooveID.nominal) / 2,
+		min: (grooveOD.min - grooveID.max) / 2,
+		max: (grooveOD.max - grooveID.min) / 2
+	};
+
+	// Stretch references groove ID (o-ring expands to fit groove inner wall)
+	const stretch = calcStretch(grooveID, id);
+
+	// Face seal: stretch is circumferential, compression is axial — orthogonal.
+	// Use free CS (no volume-conservation stretch correction).
+	const csRange: RangeResult = { nominal: cs.nominal, min: cs.min, max: cs.max };
+
+	// Axial compression: housing height is the installed height
+	const ihRange: RangeResult = { nominal: housingHeight.nominal, min: housingHeight.min, max: housingHeight.max };
+	const compression = calcCompression(ihRange, csRange);
+
+	// Fill: o-ring area / groove cross-section area
+	const fill = calcFill(csRange, grooveWidth as ResolvedDimension, ihRange, grooveRadii);
+
+	return { stretch, compression, fill, grooveWidth, stretchedCS: csRange };
 }
 
 /**
@@ -243,6 +291,149 @@ export function applyEccentricity(
 	};
 }
 
+/**
+ * Given a bore diameter, CS, and seal type, find the best standard o-ring ID
+ * and derive all housing dimensions anchored to the given bore.
+ *
+ * Piston seal: pistonDia = boreDia (zero clearance), groove cut into piston
+ * Rod seal:    rodDia = boreDia (zero clearance), groove cut into housing
+ *
+ * In both cases the piston/rod never exceeds the bore.
+ */
+export function generateFromBore(
+	bore: number,
+	cs: number,
+	sealType: SealType,
+	sizes: { id: number }[],
+	targetStretch = 5,
+	targetCompression = 20,
+	targetFill = 65,
+	grooveRadii = 0.3
+): (GeneratedHousing & { oRingID: number }) | null {
+	if (sizes.length === 0) return null;
+
+	// Estimate ideal groove diameter from bore
+	const ihApprox = cs * (1 - targetCompression / 100);
+	const grooveDiaTarget =
+		sealType === 'piston'
+			? bore - 2 * ihApprox // piston seal: groove < bore
+			: bore + 2 * ihApprox; // rod seal: groove > bore
+
+	// Ideal o-ring ID for this groove (inverse of stretch)
+	const idealID = grooveDiaTarget / (1 + targetStretch / 100);
+
+	// Find closest standard ID
+	let best = sizes[0];
+	let bestDist = Math.abs(sizes[0].id - idealID);
+	for (const s of sizes) {
+		const d = Math.abs(s.id - idealID);
+		if (d < bestDist) {
+			best = s;
+			bestDist = d;
+		}
+	}
+
+	// Derive all dimensions anchored to the given bore
+	const grooveDia = roundNice(best.id * (1 + targetStretch / 100));
+	const csStretched = cs * Math.pow(best.id / grooveDia, 2 / 3);
+	const ih = csStretched * (1 - targetCompression / 100);
+
+	let boreDia: number, pistonDia: number, grooveDepth: number;
+
+	if (sealType === 'piston') {
+		// Groove on piston: grooveDia < pistonDia ≤ boreDia
+		boreDia = bore;
+		pistonDia = bore;
+		grooveDepth = (pistonDia - grooveDia) / 2;
+	} else {
+		// Groove in housing: rodDia ≤ boreDia < grooveDia
+		boreDia = bore;
+		pistonDia = bore;
+		grooveDepth = (grooveDia - boreDia) / 2;
+	}
+
+	if (grooveDepth <= 0) return null;
+
+	const oRingArea = Math.PI * (csStretched / 2) ** 2;
+	const radiiCorrection = 2 * grooveRadii ** 2 * (1 - Math.PI / 4);
+	const grooveAreaNeeded = oRingArea / (targetFill / 100);
+	const widthExact = (grooveAreaNeeded + radiiCorrection) / grooveDepth;
+	const grooveWidth = roundNice(Math.max(widthExact, cs * 1.1));
+
+	return { boreDia, pistonDia, grooveDia, grooveWidth, oRingID: best.id };
+}
+
+export interface GeneratedFaceSeal {
+	grooveOD: number;
+	grooveID: number;
+	housingHeight: number;
+	grooveRadii: number;
+	oRingID: number;
+}
+
+/**
+ * Generate face seal groove from o-ring (CS + ID known).
+ * Derives grooveID from stretch, grooveOD from fill, housingHeight from compression.
+ */
+export function generateFaceSealFromORing(
+	cs: number,
+	id: number,
+	targetStretch = 1,
+	targetCompression = 20,
+	targetFill = 65,
+	grooveRadii = 0.3
+): GeneratedFaceSeal {
+	// Groove ID from stretch: grooveID = id * (1 + stretch/100)
+	const grooveID = roundNice(id * (1 + targetStretch / 100));
+
+	// Housing height from compression: IH = CS * (1 - comp/100)
+	const housingHeight = roundNice(cs * (1 - targetCompression / 100), 'nearest');
+
+	// Groove width from fill: width = (oRingArea / fill + radiiCorr) / grooveDepth
+	// For face seal, grooveDepth = housingHeight
+	const oRingArea = Math.PI * (cs / 2) ** 2;
+	const radiiCorrection = 2 * grooveRadii ** 2 * (1 - Math.PI / 4);
+	const grooveAreaNeeded = oRingArea / (targetFill / 100);
+	const widthExact = (grooveAreaNeeded + radiiCorrection) / housingHeight;
+	const grooveWidth = roundNice(Math.max(widthExact, cs * 1.1));
+
+	// Groove OD = grooveID + 2 * grooveWidth
+	const grooveOD = roundNice(grooveID + 2 * grooveWidth);
+
+	return { grooveOD, grooveID, housingHeight, grooveRadii, oRingID: id };
+}
+
+/**
+ * Generate face seal dimensions from groove ID (CS + grooveID known).
+ * Picks the best standard o-ring, then derives grooveOD and housingHeight.
+ */
+export function generateFaceSealFromGrooveID(
+	cs: number,
+	grooveID: number,
+	sizes: { id: number }[],
+	targetStretch = 1,
+	targetCompression = 20,
+	targetFill = 65,
+	grooveRadii = 0.3
+): GeneratedFaceSeal | null {
+	if (sizes.length === 0) return null;
+
+	// Ideal o-ring ID: grooveID = id * (1 + stretch/100) → id = grooveID / (1 + stretch/100)
+	const idealID = grooveID / (1 + targetStretch / 100);
+
+	let best = sizes[0];
+	let bestDist = Math.abs(sizes[0].id - idealID);
+	for (const s of sizes) {
+		const d = Math.abs(s.id - idealID);
+		if (d < bestDist) {
+			best = s;
+			bestDist = d;
+		}
+	}
+
+	return generateFaceSealFromORing(cs, best.id, targetStretch, targetCompression, targetFill, grooveRadii);
+}
+
 /** Round to the nearest "nice" machining number based on magnitude */
 function roundNice(v: number, dir: 'nearest' | 'up' | 'down' = 'nearest'): number {
 	const step = v >= 100 ? 1 : v >= 10 ? 0.5 : v >= 1 ? 0.1 : 0.05;
@@ -270,6 +461,7 @@ export interface GeneratedHousing {
  * @param targetCompression  Target compression % (default 20)
  * @param targetFill         Target fill % (default 75)
  * @param grooveRadii        Groove corner radii (default 0.3 mm)
+ * @param sealType           Piston or rod seal (default piston)
  */
 export function generateHousing(
 	cs: number,
@@ -277,7 +469,8 @@ export function generateHousing(
 	targetStretch = 5,
 	targetCompression = 20,
 	targetFill = 65,
-	grooveRadii = 0.3
+	grooveRadii = 0.3,
+	sealType: SealType = 'piston'
 ): GeneratedHousing {
 	// 1. Groove diameter — round to nearest, then recompute actual stretch
 	const grooveDia = roundNice(id * (1 + targetStretch / 100));
@@ -289,12 +482,21 @@ export function generateHousing(
 	//    compression% = (CS_s - IH) / CS_s × 100  →  IH = CS_s × (1 - comp/100)
 	const ih = csStretched * (1 - targetCompression / 100);
 
-	// 4. Bore & piston share the same nominal — round to nearest
-	const boreDia = roundNice(grooveDia + 2 * ih);
-	const pistonDia = boreDia;
+	let boreDia: number, pistonDia: number, grooveDepth: number;
+
+	if (sealType === 'piston') {
+		// Piston seal: bore/piston above groove
+		boreDia = roundNice(grooveDia + 2 * ih);
+		pistonDia = boreDia;
+		grooveDepth = (pistonDia - grooveDia) / 2;
+	} else {
+		// Rod seal: rod/bore below groove
+		pistonDia = roundNice(grooveDia - 2 * ih); // rodDia
+		boreDia = pistonDia;
+		grooveDepth = (grooveDia - boreDia) / 2;
+	}
 
 	// 5. Groove width — use actual rounded groove depth for fill calculation
-	const grooveDepth = (pistonDia - grooveDia) / 2;
 	const oRingArea = Math.PI * (csStretched / 2) ** 2;
 	const radiiCorrection = 2 * grooveRadii ** 2 * (1 - Math.PI / 4);
 	const grooveAreaNeeded = oRingArea / (targetFill / 100);

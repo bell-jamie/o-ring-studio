@@ -534,6 +534,16 @@ const ID_TOL_AERO_700: ToleranceBand[] = [
 
 // ID tolerance Non-STD B uses the same equation A.1 as Class B (classB_IDTolerance)
 
+// ── Standard CS values ────────────────────────────────────────────
+// These are the only CS diameters defined in the main tables (Tables 2–6).
+// Any other CS is "non-standard" and uses Annex A tables instead.
+
+const STANDARD_CS = new Set([1.02, 1.27, 1.52, 1.78, 2.62, 3.53, 5.33, 6.99]);
+
+function isStandardCS(cs: number): boolean {
+	return STANDARD_CS.has(Math.round(cs * 100) / 100);
+}
+
 // ── Lookup helpers ────────────────────────────────────────────────
 
 function findBand(
@@ -556,7 +566,9 @@ export function lookupCSTolerance(
 	nominal: number,
 	cls: OringClass = 'A'
 ): { upper: number; lower: number } | null {
-	const table = cls === 'A' ? CS_TOL_A : cls === 'B' ? CS_TOL_B : CS_TOL_AERO;
+	if (cls === 'Aero') return findBand(nominal, CS_TOL_AERO);
+	const std = isStandardCS(nominal);
+	const table = cls === 'A' ? (std ? CS_TOL_A : CS_TOL_NSTDA) : (std ? CS_TOL_B : CS_TOL_NSTDB);
 	return findBand(nominal, table);
 }
 
@@ -581,6 +593,7 @@ export function lookupIDTolerance(
 
 function getClassAIDTable(cs?: number): ToleranceBand[] | null {
 	if (cs == null) return null;
+	if (!isStandardCS(cs)) return ID_TOL_NSTDA;
 	if (cs <= 1.78) return ID_TOL_A_178;
 	if (cs <= 2.62) return ID_TOL_A_262;
 	if (cs <= 3.53) return ID_TOL_A_353;

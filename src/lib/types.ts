@@ -1,3 +1,6 @@
+/** Seal geometry type */
+export type SealType = 'piston' | 'rod' | 'face';
+
 /** A dimension with nominal value and bilateral tolerances */
 export interface TolerancedDimension {
 	nominal: number;
@@ -38,6 +41,25 @@ export interface PistonSealResults {
 	extrusionGap: RangeResult;
 	installedHeight: RangeResult;
 	grooveDepth: RangeResult;
+	stretchedCS: RangeResult;
+}
+
+/** Input dimensions for a face seal analysis */
+export interface FaceSealInputs {
+	grooveOD: TolerancedDimension;
+	grooveID: TolerancedDimension;
+	housingHeight: TolerancedDimension;
+	grooveRadii: TolerancedDimension;
+	oRingCS: TolerancedDimension;
+	oRingID: TolerancedDimension;
+}
+
+/** Calculated output metrics for a face seal */
+export interface FaceSealResults {
+	stretch: RangeResult;
+	compression: RangeResult;
+	fill: RangeResult;
+	grooveWidth: RangeResult;
 	stretchedCS: RangeResult;
 }
 
