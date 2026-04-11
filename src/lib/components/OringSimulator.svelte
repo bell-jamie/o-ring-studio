@@ -34,28 +34,32 @@
 	let posYmm = $state(0);
 
 	// ── Sim constants ──────────────────────────────────────────────────
-	const DT = 1 / 240;
+	const DT = 1 / 480;
 
 	// ── User state (sim controls) ──────────────────────────────────────
 	let dragging = $state(false);
 	let showDebug = $state(false);
-	let maxForce = $state(400);
 	let friction = $state(0.3);
-	let springK = $state(500);
 	let chamferAngle = $state(15);
 	let chamferLength = $state(4.5);
 	let chamferBoreRadius = $state(1.0);
 	let physicsOn = $state(true);
-	let youngsE = $state(7);
-	let poisson = $state(0.4995);
+	let shoreA = $state(70);
+	// Gent's equation: Shore A hardness → Young's modulus (MPa)
+	const youngsE = $derived((0.0981 * (56 + 7.62336 * shoreA)) / (0.137505 * (254 - 2.54 * shoreA)));
+
 	let pDamp = $state(0.02);
 	let structDamp = $state(0.5);
-	let nParticles = $state(32);
+	let tangentialDamp = $state(1.0);
+	let nParticles = $state(64);
 
 	// ── Derived geometry ───────────────────────────────────────────────
 	const r0 = $derived(cs / 2);
-	const bulkMod = $derived(youngsE / (3 * (1 - 2 * poisson)));
-	const segLen = $derived((2 * Math.PI * r0) / nParticles);
+	// 2D area-preservation "bulk modulus". The 3D formula E/(3(1-2ν)) diverges
+	// for incompressible rubber — wrong for a 2D slice where rubber flows out-of-plane.
+	// ~80×E: strong enough to preserve area (match analytical compression) without exploding.
+	const bulkMod = $derived(youngsE * 80);
+	const segLen = $derived(2 * r0 * Math.sin(Math.PI / nParticles));
 	const structK = $derived((youngsE * cs) / segLen);
 	const bendK = $derived((youngsE * cs ** 3) / (12 * segLen));
 	const contactK = $derived(structK * 50);
@@ -134,6 +138,7 @@
 	const grRpx = $derived(
 		Math.min(grooveRadii * S, (grooveBottomY - rodOdY) * 0.45, grooveWidth * S * 0.45)
 	);
+	const tRpx = $derived(0.1 * S);
 
 	// ── Physics types ──────────────────────────────────────────────────
 	type Particle = { x: number; y: number; vx: number; vy: number };
@@ -296,29 +301,34 @@
 			});
 		}
 
-		// ── Piston/rod segments — fixed at origin (skip for face seal: plate replaces rod) ──
+		const gRad = Math.min(grooveRadii, (glandDepth - clearance) * 0.45, grooveWidth * 0.45);
+		// Top fillet radius at groove opening (wall ↔ rod/piston surface)
+		const tRad = 0.1;
+		const nArc = 4;
 
+		// ── Rod/piston surface either side of groove (with top fillets) ──
 		if (!isFace) {
 			segs.push({
-				x1: gLv - 20,
+				x1: gLv - cs,
 				y1: clearance,
 				x2: gLv,
 				y2: clearance,
 				nx: 0,
-				ny: 1,
+				ny: -1,
 				type: 'rod'
 			});
 			segs.push({
 				x1: gRv,
 				y1: clearance,
-				x2: gRv + 20,
+				x2: gRv + cs,
 				y2: clearance,
 				nx: 0,
-				ny: 1,
+				ny: -1,
 				type: 'rod'
 			});
 		}
-		const gRad = Math.min(grooveRadii, (glandDepth - clearance) * 0.45, grooveWidth * 0.45);
+
+		// ── Groove floor ──
 		if (gRad > 0.01) {
 			segs.push({
 				x1: gLv + gRad,
@@ -329,25 +339,85 @@
 				ny: -1,
 				type: 'groove'
 			});
+		} else {
 			segs.push({
 				x1: gLv,
-				y1: clearance,
+				y1: glandDepth,
+				x2: gRv,
+				y2: glandDepth,
+				nx: 0,
+				ny: -1,
+				type: 'groove'
+			});
+		}
+
+		// ── Groove walls (shortened to leave room for top and bottom fillets) ──
+		const wallTop = clearance + tRad;
+		const wallBot = gRad > 0.01 ? glandDepth - gRad : glandDepth;
+		if (wallTop < wallBot - 0.01) {
+			segs.push({
+				x1: gLv,
+				y1: wallTop,
 				x2: gLv,
-				y2: glandDepth - gRad,
+				y2: wallBot,
 				nx: 1,
 				ny: 0,
 				type: 'gwall'
 			});
 			segs.push({
 				x1: gRv,
-				y1: clearance,
+				y1: wallTop,
 				x2: gRv,
-				y2: glandDepth - gRad,
+				y2: wallBot,
 				nx: -1,
 				ny: 0,
 				type: 'gwall'
 			});
-			const nArc = 4;
+		}
+
+		// ── Top fillets: wall ↔ rod surface (quarter circle, concave) ──
+		// Concave fillets: normals point AWAY from center (into groove interior)
+		// Left top fillet: concave, center at (gLv - tRad, clearance + tRad)
+		{
+			const cx = gLv - tRad,
+				cy = clearance + tRad;
+			for (let k = 0; k < nArc; k++) {
+				const a0 = Math.PI + (k / nArc) * (Math.PI / 2);
+				const a1 = Math.PI + ((k + 1) / nArc) * (Math.PI / 2);
+				const amid = (a0 + a1) / 2;
+				segs.push({
+					x1: cx - tRad * Math.cos(a0),
+					y1: cy + tRad * Math.sin(a0),
+					x2: cx - tRad * Math.cos(a1),
+					y2: cy + tRad * Math.sin(a1),
+					nx: -Math.cos(amid),
+					ny: Math.sin(amid),
+					type: 'groove'
+				});
+			}
+		}
+		// Right top fillet: concave, center at (gRv + tRad, clearance + tRad)
+		{
+			const cx = gRv + tRad,
+				cy = clearance + tRad;
+			for (let k = 0; k < nArc; k++) {
+				const a0 = (3 * Math.PI) / 2 + (k / nArc) * (Math.PI / 2);
+				const a1 = (3 * Math.PI) / 2 + ((k + 1) / nArc) * (Math.PI / 2);
+				const amid = (a0 + a1) / 2;
+				segs.push({
+					x1: cx - tRad * Math.cos(a0),
+					y1: cy + tRad * Math.sin(a0),
+					x2: cx - tRad * Math.cos(a1),
+					y2: cy + tRad * Math.sin(a1),
+					nx: -Math.cos(amid),
+					ny: Math.sin(amid),
+					type: 'groove'
+				});
+			}
+		}
+
+		// ── Bottom fillets (existing) ──
+		if (gRad > 0.01) {
 			const cxL = gLv + gRad,
 				cyB = glandDepth - gRad;
 			for (let k = 0; k < nArc; k++) {
@@ -364,49 +434,22 @@
 					type: 'groove'
 				});
 			}
-			const cxR = gRv - gRad;
+			const cxR = gRv - gRad,
+				cyBR = glandDepth - gRad;
 			for (let k = 0; k < nArc; k++) {
 				const a0 = (k / nArc) * (Math.PI / 2);
 				const a1 = ((k + 1) / nArc) * (Math.PI / 2);
 				const amid = (a0 + a1) / 2;
 				segs.push({
 					x1: cxR + gRad * Math.cos(a0),
-					y1: cyB + gRad * Math.sin(a0),
+					y1: cyBR + gRad * Math.sin(a0),
 					x2: cxR + gRad * Math.cos(a1),
-					y2: cyB + gRad * Math.sin(a1),
+					y2: cyBR + gRad * Math.sin(a1),
 					nx: -Math.cos(amid),
 					ny: -Math.sin(amid),
 					type: 'groove'
 				});
 			}
-		} else {
-			segs.push({
-				x1: gLv,
-				y1: glandDepth,
-				x2: gRv,
-				y2: glandDepth,
-				nx: 0,
-				ny: -1,
-				type: 'groove'
-			});
-			segs.push({
-				x1: gLv,
-				y1: clearance,
-				x2: gLv,
-				y2: glandDepth,
-				nx: 1,
-				ny: 0,
-				type: 'gwall'
-			});
-			segs.push({
-				x1: gRv,
-				y1: clearance,
-				x2: gRv,
-				y2: glandDepth,
-				nx: -1,
-				ny: 0,
-				type: 'gwall'
-			});
 		}
 		return segs;
 	}
@@ -420,14 +463,20 @@
 		if (t < 0 || t > 1) return -1;
 		const cx = seg.x1 + t * dx,
 			cy = seg.y1 + t * dy;
-		return -((px - cx) * seg.nx + (py - cy) * seg.ny);
+		const pen = -((px - cx) * seg.nx + (py - cy) * seg.ny);
+		// Ignore deep penetrations — particle is on the wrong side of a thin wall
+		if (pen > segLen) return -1;
+		return pen;
 	}
 
+	// Creates perimeter particles [0..n-1] + center particle [n]
 	function createRing(cx: number, cy: number, r: number, n: number): Particle[] {
-		return Array.from({ length: n }, (_, i) => {
+		const pts = Array.from({ length: n }, (_, i) => {
 			const a = (i / n) * Math.PI * 2;
 			return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a), vx: 0, vy: 0 };
 		});
+		pts.push({ x: cx, y: cy, vx: 0, vy: 0 }); // center particle
+		return pts;
 	}
 
 	function polyArea(pts: Particle[]) {
@@ -443,7 +492,7 @@
 		// Face seal: centre in groove; piston/rod: sit near groove floor
 		const cy = isFace ? (clearance + glandDepth) / 2 : glandDepth - r0 * 1.1;
 		const maxRx = grooveWidth / 2 - 0.05;
-		const spawnR = Math.min(r0 * 0.95, maxRx > 0.1 ? maxRx : r0 * 0.5);
+		const spawnR = Math.min(r0, maxRx > 0.1 ? maxRx : r0 * 0.5);
 		particles = createRing(0, cy, spawnR, n);
 		posX = housingXmm;
 		vel = 0;
@@ -470,14 +519,14 @@
 		e.preventDefault();
 		(e.target as Element).setPointerCapture(e.pointerId);
 		dragStartPixel = isFace ? e.clientY : e.clientX;
-		dragStartMm = posX;
+		dragStartMm = targetX;
 		dragging = true;
 	}
 	function onMove(e: PointerEvent) {
 		if (!dragging) return;
 		const pixel = isFace ? e.clientY : e.clientX;
 		const sign = isFace ? -1 : 1;
-		const raw = dragStartMm + (pixel - dragStartPixel) * 0.05 * sign;
+		const raw = dragStartMm + ((pixel - dragStartPixel) / S) * sign;
 		targetX = Math.max(minPosMm, Math.min(maxPosMm, raw));
 	}
 	function onUp() {
@@ -493,6 +542,7 @@
 		let running = true;
 		let lastT = performance.now();
 		let acc = 0;
+		let dbgFrame = 0;
 
 		function step() {
 			if (!running) return;
@@ -501,8 +551,8 @@
 			lastT = now;
 
 			const pts = particles;
-			const nPts = nParticles;
-			if (pts.length !== nPts) {
+			const nPts = nParticles; // perimeter count; pts has nPts+1 (center at index nPts)
+			if (pts.length !== nPts + 1) {
 				animId = requestAnimationFrame(step);
 				return;
 			}
@@ -523,20 +573,26 @@
 				}
 
 				const segs = buildSegs(cL, cA, hX);
-				const fx = new Float64Array(nPts);
-				const fy = new Float64Array(nPts);
+				const nAll = nPts + 1; // perimeter + center
+				const fx = new Float64Array(nAll);
+				const fy = new Float64Array(nAll);
+				const ci = nPts; // center particle index
 
 				const sK = structK;
 				const prK = bulkMod;
 				const bK = bendK;
 				const cK = contactK;
 				const pm = 0.05;
-				const rSeg = (2 * Math.PI * (csVal / 2)) / nPts;
-				const restArea = Math.PI * (csVal / 2) ** 2;
+				// Use chord length (not arc) so perimeter springs are at rest when spawned
+				const rSeg = 2 * (csVal / 2) * Math.sin(Math.PI / nPts);
+				const rSpoke = csVal / 2; // rest length of radial spokes
+				// Rest area = polygon area at spawn (not π*r²) so pressure starts at zero
+				const restArea = (nPts / 2) * (csVal / 2) ** 2 * Math.sin((2 * Math.PI) / nPts);
 				const stretchFrac = stretchPercent / 100;
 
 				// Structural springs (perimeter) + structural damping
 				const sDamp = structDamp * 2 * Math.sqrt(sK * pm);
+				const tanDamp = tangentialDamp * 2 * Math.sqrt(sK * pm);
 				for (let i = 0; i < nPts; i++) {
 					const j = (i + 1) % nPts;
 					const dx = pts[j].x - pts[i].x,
@@ -545,26 +601,78 @@
 					const f = sK * (d - rSeg);
 					const ux = dx / d,
 						uy = dy / d;
-					// Relative velocity along spring axis
 					const dvx = pts[j].vx - pts[i].vx,
 						dvy = pts[j].vy - pts[i].vy;
+					// Radial (along-spring) damping
 					const vRel = dvx * ux + dvy * uy;
 					const fDamp = sDamp * vRel;
 					fx[i] += (f + fDamp) * ux;
 					fy[i] += (f + fDamp) * uy;
 					fx[j] -= (f + fDamp) * ux;
 					fy[j] -= (f + fDamp) * uy;
+					// Tangential damping — kills sliding/shuffling along the perimeter
+					const tx = -uy, ty = ux;
+					const vTan = dvx * tx + dvy * ty;
+					const fTan = tanDamp * vTan;
+					fx[i] += fTan * tx;
+					fy[i] += fTan * ty;
+					fx[j] -= fTan * tx;
+					fy[j] -= fTan * ty;
 				}
 
-				// Hoop stress from installation stretch — radial inward force from ring tension.
-				// Only applies to piston/rod seals where the 2D cross-section is axial.
-				// Face seal stretch is circumferential (out of plane), so no hoop force here.
+				// Radial spokes: center ↔ each perimeter particle
+				// These directly resist compression — stiffer than perimeter springs
+				// Normalize so total radial stiffness is independent of nParticles
+				// (32 spokes at k each = same total as 16 spokes at 2k)
+				const spokeK = (sK * 0.5 * 32) / nPts;
+				const spokeDamp = structDamp * 2 * Math.sqrt(spokeK * pm);
+				for (let i = 0; i < nPts; i++) {
+					const dx = pts[i].x - pts[ci].x,
+						dy = pts[i].y - pts[ci].y;
+					const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
+					const f = spokeK * (d - rSpoke);
+					const ux = dx / d,
+						uy = dy / d;
+					const dvx = pts[i].vx - pts[ci].vx,
+						dvy = pts[i].vy - pts[ci].vy;
+					const vRel = dvx * ux + dvy * uy;
+					const fDamp = spokeDamp * vRel;
+					fx[ci] += (f + fDamp) * ux;
+					fy[ci] += (f + fDamp) * uy;
+					fx[i] -= (f + fDamp) * ux;
+					fy[i] -= (f + fDamp) * uy;
+				}
+
+				// Hoop stress: two effects from circumferential stretch.
+				// 1) Radial compression: squeezes cross-section toward its centroid
+				// 2) Seating force: net load pushes ring toward bore (piston) or rod (rod)
+				//    Applied to center particle only — no torque on the ring.
+				// Face: stretch is circumferential (out of plane), no hoop force.
 				if (stretchFrac > 0.001 && sealType !== 'face') {
-					const hoopForce = (youngsE * csVal * stretchFrac) / nPts;
-					for (let i = 0; i < nPts; i++) fy[i] += hoopForce;
+					const hoopPressure = (youngsE * stretchFrac * csVal) / r0;
+					const hoopForce = hoopPressure * rSeg;
+					// 1) Radial compression toward centroid
+					let cxH = 0,
+						cyH = 0;
+					for (let i = 0; i < nPts; i++) {
+						cxH += pts[i].x;
+						cyH += pts[i].y;
+					}
+					cxH /= nPts;
+					cyH /= nPts;
+					for (let i = 0; i < nPts; i++) {
+						const dx = pts[i].x - cxH,
+							dy = pts[i].y - cyH;
+						const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
+						fx[i] -= hoopForce * (dx / d);
+						fy[i] -= hoopForce * (dy / d);
+					}
+					// 2) Seating: total hoop load on center particle
+					const seatDir = sealType === 'rod' ? -1 : 1;
+					fy[ci] += hoopForce * nPts * seatDir;
 				}
 
-				// Bending resistance
+				// Bending resistance (perimeter only)
 				for (let i = 0; i < nPts; i++) {
 					const prev = (i - 1 + nPts) % nPts,
 						next = (i + 1) % nPts;
@@ -572,9 +680,10 @@
 					fy[i] += bK * ((pts[prev].y + pts[next].y) / 2 - pts[i].y);
 				}
 
-				// Internal pressure (bulk modulus — resists area change)
+				// Internal pressure (bulk modulus — resists area change, perimeter only)
 				const targetArea = restArea / Math.sqrt(1.0 + stretchFrac);
-				const pressure = prK * (1.0 - polyArea(pts) / targetArea);
+				const periPts = pts.slice(0, nPts);
+				const pressure = prK * (1.0 - polyArea(periPts) / targetArea);
 				for (let i = 0; i < nPts; i++) {
 					const prev = (i - 1 + nPts) % nPts,
 						next = (i + 1) % nPts;
@@ -586,18 +695,22 @@
 					fy[i] += pressure * (-ex / el) * edgeLen;
 				}
 
-				// Contact + Coulomb friction (with relative velocity for moving segments)
-				let matingF = 0; // reaction force on the moving part (x for piston/rod, y for face)
+				// Contact + Coulomb friction (perimeter only — center is interior)
+				let matingF = 0;
 				const isMoving = (t: string) => t === 'bore' || t === 'chamfer' || t === 'face';
 				const face = sealType === 'face';
 				for (let i = 0; i < nPts; i++) {
 					for (const seg of segs) {
 						const pen = ptSegDist(pts[i].x, pts[i].y, seg);
 						if (pen > 0) {
+							if (showDebug && dbgFrame % 60 === 0 && acc < DT) {
+								console.log(
+									`  contact: p${i}=(${pts[i].x.toFixed(2)},${pts[i].y.toFixed(2)}) seg=${seg.type} (${seg.x1.toFixed(2)},${seg.y1.toFixed(2)})→(${seg.x2.toFixed(2)},${seg.y2.toFixed(2)}) n=(${seg.nx.toFixed(2)},${seg.ny.toFixed(2)}) pen=${pen.toFixed(4)}`
+								);
+							}
 							const cF = cK * pen;
 							fx[i] += cF * seg.nx;
 							fy[i] += cF * seg.ny;
-							// Relative velocity (moving segments have hVel in x or y)
 							const surfVx = isMoving(seg.type) && !face ? hVel : 0;
 							const surfVy = isMoving(seg.type) && face ? hVel : 0;
 							const relVx = pts[i].vx - surfVx;
@@ -621,26 +734,57 @@
 					}
 				}
 
-				// Integrate particles
-				const decay = Math.exp(-pDamp * DT * 240);
-				for (let i = 0; i < nPts; i++) {
-					pts[i].vx = (pts[i].vx + (fx[i] / pm) * DT) * decay;
-					pts[i].vy = (pts[i].vy + (fy[i] / pm) * DT) * decay;
+				// Debug: log once per frame (first substep only)
+				if (showDebug && dbgFrame % 30 === 0 && acc < DT) {
+					const p0 = pts[0],
+						ctr = pts[ci];
+					const sd = Math.sqrt((p0.x - ctr.x) ** 2 + (p0.y - ctr.y) ** 2);
+					let netFx = 0,
+						netFy = 0;
+					for (let k = 0; k < nAll; k++) {
+						netFx += fx[k];
+						netFy += fy[k];
+					}
+					console.log(
+						`[frame ${dbgFrame}]`,
+						`p0=(${p0.x.toFixed(3)},${p0.y.toFixed(3)})`,
+						`ctr=(${ctr.x.toFixed(3)},${ctr.y.toFixed(3)})`,
+						`spoke=${sd.toFixed(4)}/${rSpoke.toFixed(4)}`,
+						`\n  f0=(${fx[0].toFixed(2)},${fy[0].toFixed(2)})`,
+						`fCtr=(${fx[ci].toFixed(2)},${fy[ci].toFixed(2)})`,
+						`net=(${netFx.toFixed(2)},${netFy.toFixed(2)})`,
+						`\n  prs=${pressure.toFixed(3)}`,
+						`area=${polyArea(periPts).toFixed(2)}/${targetArea.toFixed(2)}`,
+						`sK=${sK.toFixed(1)} spokeK=${spokeK.toFixed(1)} cK=${cK.toFixed(1)} prK=${prK.toFixed(1)}`,
+						`hX=${hX.toFixed(3)}`
+					);
+				}
+
+				// Integrate all particles (perimeter + center)
+				// Light outer particles, heavy center particle
+				const pmCenter = pm * nPts;
+				const decay = Math.exp(-pDamp * DT * 480);
+				for (let i = 0; i < nAll; i++) {
+					const mi = i === ci ? pmCenter : pm;
+					pts[i].vx = (pts[i].vx + (fx[i] / mi) * DT) * decay;
+					pts[i].vy = (pts[i].vy + (fy[i] / mi) * DT) * decay;
 					pts[i].x += pts[i].vx * DT;
 					pts[i].y += pts[i].vy * DT;
 				}
 
-				// Moving part dynamics (in mm-space)
-				const hMass = 10;
+				// Moving part dynamics — critically-damped spring to cursor
+				// Spring stiffness scales with material so harder o-rings feel stiffer
+				const hMass = 0.3;
+				const hK = contactK * 0.5; // scale with material so drag tracks o-ring stiffness
+				const hDamp = 2 * Math.sqrt(hK * hMass); // critical damping
+				const oRingReaction = matingF;
 				if (dragging) {
 					const sep = targetX - posX;
-					const raw = springK * sep;
-					const sF = Math.sign(raw) * Math.min(Math.abs(raw), maxForce);
-					vel += ((sF + matingF * 0.01) / hMass) * DT;
+					vel += ((hK * sep - hDamp * vel + oRingReaction) / hMass) * DT;
 				} else {
-					vel += ((matingF * 0.01) / hMass) * DT;
+					vel += (oRingReaction / hMass) * DT;
+					vel *= Math.exp(-10 * DT);
 				}
-				vel *= Math.exp((-80 / hMass) * DT);
 				posX += vel * DT;
 				posX = Math.max(minPosMm, Math.min(maxPosMm, posX));
 			}
@@ -651,17 +795,22 @@
 			} else {
 				posXmm = posX;
 			}
-			renderPts = pts.map((p) => ({ x: p.x, y: p.y }));
+			// Only render perimeter particles (exclude center)
+			renderPts = pts.slice(0, nPts).map((p) => ({ x: p.x, y: p.y }));
 
 			let minY = Infinity,
 				maxY = -Infinity;
-			for (const p of pts) {
-				if (p.y < minY) minY = p.y;
-				if (p.y > maxY) maxY = p.y;
+			for (let i = 0; i < nPts; i++) {
+				if (pts[i].y < minY) minY = pts[i].y;
+				if (pts[i].y > maxY) maxY = pts[i].y;
 			}
 			const h = maxY - minY;
-			sqEst = h > 0 ? Math.max(0, 1 - h / csVal) : 0;
+			// Measure compression against stretched CS (volume-conserved),
+			// not nominal CS, to match analytical compression calculation.
+			const stretchedCS = csVal / Math.pow(1 + stretchPercent / 100, 1 / 3);
+			sqEst = h > 0 ? Math.max(0, 1 - h / stretchedCS) : 0;
 
+			dbgFrame++;
 			animId = requestAnimationFrame(step);
 		}
 
@@ -740,9 +889,9 @@
 
 				<!-- Groove clearout -->
 				<path
-					d="M {gL} {boreIdSvgY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY}"
+						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="canvas-bg"
 					stroke="none"
 				/>
@@ -781,7 +930,7 @@
 					fill="url(#{topHatch})"
 					stroke="none"
 				/>
-				<!-- Groove corner fillets -->
+				<!-- Groove corner fillets (bottom, convex — metal fill) -->
 				<path
 					d="M {gL} {boreWallY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} Z"
@@ -795,13 +944,13 @@
 					stroke="none"
 				/>
 				<!-- Housing face lines (around groove opening) -->
-				<line x1={0} y1={boreIdSvgY} x2={gL} y2={boreIdSvgY} class="surface-edge" />
-				<line x1={gR} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
+				<line x1={0} y1={boreIdSvgY} x2={gL - tRpx} y2={boreIdSvgY} class="surface-edge" />
+				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
 				<!-- Groove outline -->
 				<path
-					d="M {gL} {boreIdSvgY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY}"
+						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="groove-outline"
 				/>
 
@@ -820,9 +969,9 @@
 
 				<!-- Groove clearout (erases grid behind groove space) -->
 				<path
-					d="M {gL} {boreIdSvgY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY}"
+						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="canvas-bg"
 					stroke="none"
 				/>
@@ -861,7 +1010,7 @@
 					fill="url(#{topHatch})"
 					stroke="none"
 				/>
-				<!-- Groove corner fillets (metal fill at radii) -->
+				<!-- Groove corner fillets (bottom, convex — metal fill at radii) -->
 				<path
 					d="M {gL} {boreWallY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} Z"
@@ -875,13 +1024,13 @@
 					stroke="none"
 				/>
 				<!-- Bore ID surface lines -->
-				<line x1={0} y1={boreIdSvgY} x2={gL} y2={boreIdSvgY} class="surface-edge" />
-				<line x1={gR} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
+				<line x1={0} y1={boreIdSvgY} x2={gL - tRpx} y2={boreIdSvgY} class="surface-edge" />
+				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
 				<!-- Groove outline -->
 				<path
-					d="M {gL} {boreIdSvgY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY}"
+						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="groove-outline"
 				/>
 
@@ -940,10 +1089,10 @@
 
 				<!-- Groove clearout (erases grid behind open bore/groove space) -->
 				<path
-					d="M {gL} {rodOdY} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
+					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY + tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
 						grRpx} {grooveBottomY} L {gR -
 						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
-						grRpx} L {gR} {rodOdY}"
+						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
 					class="canvas-bg"
 					stroke="none"
 				/>
@@ -1026,9 +1175,9 @@
 					fill="url(#{bottomHatch})"
 					stroke="none"
 				/>
-				<line x1={0} y1={rodOdY} x2={gL} y2={rodOdY} class="surface-edge" />
-				<line x1={gR} y1={rodOdY} x2={viewW} y2={rodOdY} class="surface-edge" />
-				<!-- Groove corner fillets (metal fill at radii) -->
+				<line x1={0} y1={rodOdY} x2={gL - tRpx} y2={rodOdY} class="surface-edge" />
+				<line x1={gR + tRpx} y1={rodOdY} x2={viewW} y2={rodOdY} class="surface-edge" />
+				<!-- Groove corner fillets (bottom, convex — metal fill at radii) -->
 				<path
 					d="M {gL} {grooveBottomY} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
 						grRpx} {grooveBottomY} Z"
@@ -1042,10 +1191,10 @@
 					stroke="none"
 				/>
 				<path
-					d="M {gL} {rodOdY} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
+					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY + tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
 						grRpx} {grooveBottomY} L {gR -
 						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
-						grRpx} L {gR} {rodOdY}"
+						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
 					class="groove-outline"
 				/>
 			{/if}
@@ -1064,22 +1213,44 @@
 					{@const mx = (sx1 + sx2) / 2}
 					{@const my = (sy1 + sy2) / 2}
 					{@const col = debugSegColor[seg.type] ?? '#ffff44'}
-					<line x1={sx1} y1={sy1} x2={sx2} y2={sy2} stroke={col} stroke-width="2" opacity="0.5" />
+					{@const nLen = 8}
+					<line x1={sx1} y1={sy1} x2={sx2} y2={sy2} stroke={col} stroke-width="2" opacity="0.7" />
+					<!-- Normal at start -->
+					<line
+						x1={sx1}
+						y1={sy1}
+						x2={sx1 + seg.nx * nLen}
+						y2={sy1 + seg.ny * nFlip * nLen}
+						stroke={col}
+						stroke-width="1.5"
+						opacity="0.6"
+					/>
+					<!-- Normal at midpoint -->
 					<line
 						x1={mx}
 						y1={my}
-						x2={mx + seg.nx * 10}
-						y2={my + seg.ny * nFlip * 10}
+						x2={mx + seg.nx * nLen}
+						y2={my + seg.ny * nFlip * nLen}
 						stroke={col}
-						stroke-width="1"
-						opacity="0.4"
+						stroke-width="1.5"
+						opacity="0.6"
 					/>
 					<circle
-						cx={mx + seg.nx * 10}
-						cy={my + seg.ny * nFlip * 10}
+						cx={mx + seg.nx * nLen}
+						cy={my + seg.ny * nFlip * nLen}
 						r="2"
 						fill={col}
-						opacity="0.4"
+						opacity="0.6"
+					/>
+					<!-- Normal at end -->
+					<line
+						x1={sx2}
+						y1={sy2}
+						x2={sx2 + seg.nx * nLen}
+						y2={sy2 + seg.ny * nFlip * nLen}
+						stroke={col}
+						stroke-width="1.5"
+						opacity="0.6"
 					/>
 				{/each}
 			{/if}
@@ -1152,24 +1323,14 @@
 		<div class="space-y-2">
 			<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">Material</p>
 			{@render sliderRow(
-				"Young's E",
-				youngsE,
-				1,
-				50,
-				0.5,
+				'Shore A',
+				shoreA,
+				30,
+				90,
+				5,
 				'--chart-2',
-				(v) => `${v.toFixed(1)} MPa`,
-				(v) => (youngsE = v)
-			)}
-			{@render sliderRow(
-				'Poisson ν',
-				poisson,
-				0.4,
-				0.4999,
-				0.001,
-				'--chart-2',
-				(v) => v.toFixed(4),
-				(v) => (poisson = v)
+				(v) => `${v.toFixed(0)} (E=${youngsE.toFixed(1)} MPa)`,
+				(v) => (shoreA = v)
 			)}
 			{@render sliderRow(
 				'Damping',
@@ -1191,6 +1352,16 @@
 				(v) => v.toFixed(2),
 				(v) => (structDamp = v)
 			)}
+			{@render sliderRow(
+				'Tang Damp',
+				tangentialDamp,
+				0,
+				5.0,
+				0.05,
+				'--chart-2',
+				(v) => v.toFixed(2),
+				(v) => (tangentialDamp = v)
+			)}
 		</div>
 
 		<!-- Simulation tuning -->
@@ -1209,30 +1380,10 @@
 				(v) => (friction = v)
 			)}
 			{@render sliderRow(
-				'Max force',
-				maxForce,
-				10,
-				600,
-				5,
-				'--destructive',
-				(v) => `${v.toFixed(0)} N`,
-				(v) => (maxForce = v)
-			)}
-			{@render sliderRow(
-				'Drag K',
-				springK,
-				50,
-				800,
-				10,
-				'--chart-3',
-				(v) => `${v} N/m`,
-				(v) => (springK = v)
-			)}
-			{@render sliderRow(
 				'Segments',
 				nParticles,
 				8,
-				64,
+				128,
 				4,
 				'--chart-4',
 				(v) => `${v.toFixed(0)}`,
