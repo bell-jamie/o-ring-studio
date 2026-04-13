@@ -10,6 +10,9 @@
 		clearance, // = (boreDia - pistonDia) / 2
 		stretchPercent,
 		grooveRadii,
+		grooveDia, // groove diameter — needed for dynamic stretch calculation
+		oRingId, // o-ring inner diameter (free state)
+		boreDia, // bore diameter (housing ID for rod/face, bore ID for piston)
 		sealType = 'piston'
 	}: {
 		cs: number;
@@ -18,6 +21,9 @@
 		clearance: number;
 		stretchPercent: number;
 		grooveRadii: number;
+		grooveDia: number;
+		oRingId: number;
+		boreDia: number;
 		sealType?: SealType;
 	} = $props();
 
@@ -38,7 +44,10 @@
 
 	// ── User state (sim controls) ──────────────────────────────────────
 	let dragging = $state(false);
+	let faceSeated = $state(false);
+	let faceAtSeat = $state(false);
 	let showDebug = $state(false);
+	let showSettings = $state(false);
 	let friction = $state(0.3);
 	let chamferAngle = $state(15);
 	let chamferLength = $state(4.5);
@@ -48,7 +57,7 @@
 	// Gent's equation: Shore A hardness → Young's modulus (MPa)
 	const youngsE = $derived((0.0981 * (56 + 7.62336 * shoreA)) / (0.137505 * (254 - 2.54 * shoreA)));
 
-	let pDamp = $state(0.02);
+	let pDamp = $state(0.005);
 	let structDamp = $state(0.5);
 	let tangentialDamp = $state(1.0);
 	let nParticles = $state(64);
@@ -140,6 +149,55 @@
 	);
 	const tRpx = $derived(0.1 * S);
 
+	// Status card colours (match analytical ResultRow: emerald/amber/red)
+	function statusColor(val: number, min: number, max: number): string {
+		const margin = (max - min) * 0.2;
+		if (val >= min && val <= max) return '#059669';
+		if (val >= min - margin && val <= max + margin) return '#d97706';
+		return '#dc2626';
+	}
+	const compColor = $derived(statusColor(sqEst * 100, isFace ? 13 : 10, isFace ? 36 : 35));
+	const strColor = $derived(statusColor(dynamicStretch, isFace ? -2 : 2, isFace ? 3 : 8));
+	// Chamfer must clear the o-ring protruding from the groove.
+	// Rod seal: clearance is measured from bore ID inward to rod OD.
+	//   No stretch: chamfer must clear oRingID/2 (half the free ID = inner radius from axis)
+	//   Negative stretch: chamfer must clear grooveDia/2 - oRingCS (compressed ring inner edge)
+	// Piston seal: chamfer must clear the protrusion above the groove = CS - grooveDepth
+	// O-ring protrusion past groove opening into clearance gap.
+	// Rod seal: free o-ring hangs below bore ID because oRingID < boreDia.
+	//   Protrusion from bore ID = boreRadius - oRingInnerRadius
+	//   boreRadius = grooveDia/2 - grooveDepth = grooveDia/2 - (glandDepth - clearance)
+	//   No stretch: innerRadius = oRingID/2
+	//   Negative stretch: innerRadius = boreRadius - cs (compressed to fit bore)
+	// Piston seal: o-ring protrudes above piston surface = cs - grooveDepth
+	const freeORingID = $derived(grooveDia / (1 + stretchPercent / 100));
+	const boreRadius = $derived(grooveDia / 2 - (glandDepth - clearance));
+	const oRingProtrusion = $derived.by(() => {
+		if (sealType === 'rod') {
+			if (grooveDia > oRingId + 2 * cs) {
+				return boreDia / 2 - oRingId / 2;
+			} else {
+				return boreDia / 2 + cs - grooveDia / 2;
+			}
+		} else {
+			// piston seal
+			if (grooveDia < oRingId) {
+				return cs + oRingId / 2 - boreDia / 2;
+			} else {
+				return cs + grooveDia / 2 - boreDia / 2;
+			}
+		}
+	});
+	const chamferColor = $derived(
+		oRingProtrusion <= 0
+			? '#059669'
+			: chR >= oRingProtrusion * 1.2
+				? '#059669'
+				: chR >= oRingProtrusion
+					? '#d97706'
+					: '#dc2626'
+	);
+
 	// ── Physics types ──────────────────────────────────────────────────
 	type Particle = { x: number; y: number; vx: number; vy: number };
 	type Seg = {
@@ -162,6 +220,7 @@
 	// ── Render state (synced from physics each frame) ──────────────────
 	let renderPts = $state<Array<{ x: number; y: number }>>([]);
 	let sqEst = $state(0);
+	let dynamicStretch = $state(0);
 
 	// ── SVG derived ────────────────────────────────────────────────────
 	const oPath = $derived(
@@ -489,10 +548,13 @@
 	}
 
 	function spawnRing(housingXmm = posX, n = nParticles) {
-		// Face seal: centre in groove; piston/rod: sit near groove floor
-		const cy = isFace ? (clearance + glandDepth) / 2 : glandDepth - r0 * 1.1;
-		const maxRx = grooveWidth / 2 - 0.05;
-		const spawnR = Math.min(r0, maxRx > 0.1 ? maxRx : r0 * 0.5);
+		// Spawn at full CS radius (unstretched, uncompressed)
+		const spawnR = r0;
+		// Clamp center Y so the ring doesn't clip groove floor or top surface
+		const minCy = clearance + spawnR; // top: don't clip rod/piston surface
+		const maxCy = glandDepth - spawnR; // bottom: don't clip groove floor
+		const naturalCy = glandDepth - spawnR; // prefer sitting on groove floor
+		const cy = Math.max(minCy, Math.min(maxCy, naturalCy));
 		particles = createRing(0, cy, spawnR, n);
 		posX = housingXmm;
 		vel = 0;
@@ -514,13 +576,18 @@
 	// ── Drag ──────────────────────────────────────────────────────────
 	let dragStartPixel = 0;
 	let dragStartMm = 0;
+	let seatedAtPixel: number | null = null; // pixel when plate first reached seated
 
 	function onDown(e: PointerEvent) {
 		e.preventDefault();
 		(e.target as Element).setPointerCapture(e.pointerId);
 		dragStartPixel = isFace ? e.clientY : e.clientX;
-		dragStartMm = targetX;
+		// Anchor to actual position, not stale target (prevents teleport)
+		dragStartMm = posX;
+		targetX = posX;
 		dragging = true;
+		seatedAtPixel = null;
+		if (isFace && faceSeated) faceSeated = false;
 	}
 	function onMove(e: PointerEvent) {
 		if (!dragging) return;
@@ -528,8 +595,26 @@
 		const sign = isFace ? -1 : 1;
 		const raw = dragStartMm + ((pixel - dragStartPixel) / S) * sign;
 		targetX = Math.max(minPosMm, Math.min(maxPosMm, raw));
+		if (isFace) {
+			const atSeat = posX >= maxPosMm - 0.1;
+			faceAtSeat = atSeat;
+			if (atSeat && seatedAtPixel === null) {
+				// Record pixel position when plate first reaches seated
+				seatedAtPixel = pixel;
+			} else if (!atSeat) {
+				seatedAtPixel = null;
+			}
+			// Latch when user has dragged half CS further past the seated point
+			const lockDist = (cs / 2) * S; // half CS in pixels
+			faceSeated = seatedAtPixel !== null && seatedAtPixel - pixel >= lockDist;
+		}
 	}
 	function onUp() {
+		seatedAtPixel = null;
+		faceAtSeat = false;
+		if (isFace && dragging && !faceSeated) {
+			faceSeated = false;
+		}
 		dragging = false;
 	}
 
@@ -561,6 +646,7 @@
 			const cA = chamferAngle;
 			const csVal = cs;
 
+			let lastStretchFrac = stretchPercent / 100;
 			while (acc >= DT) {
 				acc -= DT;
 				const hX = posX; // housing position this substep
@@ -588,7 +674,17 @@
 				const rSpoke = csVal / 2; // rest length of radial spokes
 				// Rest area = polygon area at spawn (not π*r²) so pressure starts at zero
 				const restArea = (nPts / 2) * (csVal / 2) ** 2 * Math.sin((2 * Math.PI) / nPts);
-				const stretchFrac = stretchPercent / 100;
+				// Dynamic stretch: as center particle moves radially, effective diameter changes
+				// Piston: +Y = inward = smaller dia = less stretch (radialSign = -1)
+				// Rod: +Y = outward = larger dia = more stretch (radialSign = +1)
+				const radialSign = sealType === 'rod' ? 1 : -1;
+				const cy = pts[ci].y;
+				const spawnCy = glandDepth - csVal / 2; // nominal center Y (sitting on groove floor)
+				const oRingID = grooveDia / (1 + stretchPercent / 100);
+				const dy = cy - spawnCy;
+				const rawStretchFrac = stretchPercent / 100 + (radialSign * 2 * dy) / oRingID;
+				const stretchFrac = Math.max(0, rawStretchFrac);
+				lastStretchFrac = rawStretchFrac;
 
 				// Structural springs (perimeter) + structural damping
 				const sDamp = structDamp * 2 * Math.sqrt(sK * pm);
@@ -611,7 +707,8 @@
 					fx[j] -= (f + fDamp) * ux;
 					fy[j] -= (f + fDamp) * uy;
 					// Tangential damping — kills sliding/shuffling along the perimeter
-					const tx = -uy, ty = ux;
+					const tx = -uy,
+						ty = ux;
 					const vTan = dvx * tx + dvy * ty;
 					const fTan = tanDamp * vTan;
 					fx[i] += fTan * tx;
@@ -643,13 +740,14 @@
 					fy[i] -= (f + fDamp) * uy;
 				}
 
-				// Hoop stress: two effects from circumferential stretch.
-				// 1) Radial compression: squeezes cross-section toward its centroid
-				// 2) Seating force: net load pushes ring toward bore (piston) or rod (rod)
-				//    Applied to center particle only — no torque on the ring.
+				// Hoop stress: circumferential strain → radial pressure.
+				// Works in both tension (positive stretch → inward pressure → seats ring)
+				// and compression (negative stretch → outward pressure → unseats ring).
+				// 1) Radial force: squeezes/expands cross-section toward/away from centroid
+				// 2) Seating force: net load on center particle
 				// Face: stretch is circumferential (out of plane), no hoop force.
-				if (stretchFrac > 0.001 && sealType !== 'face') {
-					const hoopPressure = (youngsE * stretchFrac * csVal) / r0;
+				if (Math.abs(rawStretchFrac) > 0.001 && sealType !== 'face') {
+					const hoopPressure = (youngsE * rawStretchFrac * csVal) / r0;
 					const hoopForce = hoopPressure * rSeg;
 					// 1) Radial compression toward centroid
 					let cxH = 0,
@@ -778,9 +876,20 @@
 				const hK = contactK * 0.5; // scale with material so drag tracks o-ring stiffness
 				const hDamp = 2 * Math.sqrt(hK * hMass); // critical damping
 				const oRingReaction = matingF;
-				if (dragging) {
+				if (dragging && isFace) {
+					// Face seal: plate tracks cursor directly, no o-ring reaction during drag
+					const sep = targetX - posX;
+					vel += ((hK * sep - hDamp * vel) / hMass) * DT;
+				} else if (dragging) {
 					const sep = targetX - posX;
 					vel += ((hK * sep - hDamp * vel + oRingReaction) / hMass) * DT;
+				} else if (isFace && faceSeated) {
+					// Face seal: lock plate when fully seated
+					vel = 0;
+				} else if (isFace) {
+					// Face seal: just let o-ring reaction push plate back naturally
+					vel += (oRingReaction / hMass) * DT;
+					vel *= Math.exp(-10 * DT);
 				} else {
 					vel += (oRingReaction / hMass) * DT;
 					vel *= Math.exp(-10 * DT);
@@ -805,10 +914,18 @@
 				if (pts[i].y > maxY) maxY = pts[i].y;
 			}
 			const h = maxY - minY;
-			// Measure compression against stretched CS (volume-conserved),
-			// not nominal CS, to match analytical compression calculation.
-			const stretchedCS = csVal / Math.pow(1 + stretchPercent / 100, 1 / 3);
+			// Measure compression against stretched CS (volume-conserved).
+			// Use dynamic stretch (not nominal) so compression tracks actual ring state.
+			const stretchedCS = csVal / Math.pow(1 + lastStretchFrac, 2 / 3);
 			sqEst = h > 0 ? Math.max(0, 1 - h / stretchedCS) : 0;
+			dynamicStretch = lastStretchFrac * 100;
+			if (showDebug && dbgFrame % 60 === 0) {
+				console.log(
+					`[compression] h=${h.toFixed(4)} stretchedCS=${stretchedCS.toFixed(4)} ` +
+						`cs=${csVal.toFixed(4)} stretch=${stretchPercent.toFixed(2)}% ` +
+						`sim=${(sqEst * 100).toFixed(1)}% minY=${minY.toFixed(4)} maxY=${maxY.toFixed(4)}`
+				);
+			}
 
 			dbgFrame++;
 			animId = requestAnimationFrame(step);
@@ -889,7 +1006,8 @@
 
 				<!-- Groove clearout -->
 				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
+						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
 						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="canvas-bg"
@@ -948,7 +1066,8 @@
 				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
 				<!-- Groove outline -->
 				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
+						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
 						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="groove-outline"
@@ -963,13 +1082,28 @@
 					fill="url(#{bottomHatch})"
 					stroke="none"
 				/>
-				<line x1={0} y1={plateSvgY} x2={viewW} y2={plateSvgY} class="surface-edge" />
+				<line
+					x1={0}
+					y1={plateSvgY}
+					x2={viewW}
+					y2={plateSvgY}
+					class={faceSeated || faceAtSeat ? 'seated-edge' : 'surface-edge'}
+				/>
+				{#if faceSeated}
+					<text x={viewW - 8} y={plateSvgY + 16} text-anchor="end" class="seated-label">SEATED</text
+					>
+				{:else if faceAtSeat}
+					<text x={viewW - 8} y={plateSvgY + 16} text-anchor="end" class="seated-label"
+						>DRAG UP TO LOCK</text
+					>
+				{/if}
 			{:else if sealType === 'rod'}
 				<!-- ═══ ROD SEAL LAYOUT: housing+groove at top, rod+chamfer at bottom ═══ -->
 
 				<!-- Groove clearout (erases grid behind groove space) -->
 				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
+						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
 						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="canvas-bg"
@@ -1028,7 +1162,8 @@
 				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
 				<!-- Groove outline -->
 				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY - tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
+					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
+						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
 						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
 						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
 					class="groove-outline"
@@ -1089,7 +1224,8 @@
 
 				<!-- Groove clearout (erases grid behind open bore/groove space) -->
 				<path
-					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY + tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
+					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY +
+						tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
 						grRpx} {grooveBottomY} L {gR -
 						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
 						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
@@ -1191,7 +1327,8 @@
 					stroke="none"
 				/>
 				<path
-					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY + tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
+					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY +
+						tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
 						grRpx} {grooveBottomY} L {gR -
 						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
 						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
@@ -1266,18 +1403,13 @@
 
 	<!-- Controls panel -->
 	<div class="flex-1 space-y-4 font-mono text-xs">
-		<!-- Live geometry from calculator -->
-		<div
-			class="flex items-center justify-between rounded-md border border-border bg-muted/40 px-3 py-2 text-[11px]"
-		>
-			<span class="text-muted-foreground">CS</span>
-			<span class="font-medium text-foreground">{cs.toFixed(2)} mm</span>
-			<span class="text-muted-foreground">Stretch</span>
-			<span class="font-medium text-foreground">{stretchPercent.toFixed(1)}%</span>
-			<span class="text-muted-foreground">Groove</span>
-			<span class="font-medium text-foreground"
-				>{grooveWidth.toFixed(2)} × {(glandDepth - clearance).toFixed(2)} mm</span
-			>
+		<!-- Status cards -->
+		<div class="grid {isFace ? 'grid-cols-2' : 'grid-cols-3'} gap-2">
+			{@render card('Compression', `${(sqEst * 100).toFixed(1)}%`, compColor)}
+			{@render card('Stretch', `${dynamicStretch.toFixed(1)}%`, strColor)}
+			{#if !isFace}
+				{@render card('Chamfer depth', `${chR.toFixed(2)} mm`, chamferColor)}
+			{/if}
 		</div>
 
 		<!-- Lead-in geometry (piston/rod only) -->
@@ -1319,7 +1451,7 @@
 			</div>
 		{/if}
 
-		<!-- Material properties -->
+		<!-- Material -->
 		<div class="space-y-2">
 			<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">Material</p>
 			{@render sliderRow(
@@ -1332,107 +1464,100 @@
 				(v) => `${v.toFixed(0)} (E=${youngsE.toFixed(1)} MPa)`,
 				(v) => (shoreA = v)
 			)}
-			{@render sliderRow(
-				'Damping',
-				pDamp,
-				0,
-				0.2,
-				0.005,
-				'--chart-2',
-				(v) => v.toFixed(3),
-				(v) => (pDamp = v)
-			)}
-			{@render sliderRow(
-				'Struct Damp',
-				structDamp,
-				0,
-				1.0,
-				0.01,
-				'--chart-2',
-				(v) => v.toFixed(2),
-				(v) => (structDamp = v)
-			)}
-			{@render sliderRow(
-				'Tang Damp',
-				tangentialDamp,
-				0,
-				5.0,
-				0.05,
-				'--chart-2',
-				(v) => v.toFixed(2),
-				(v) => (tangentialDamp = v)
-			)}
 		</div>
 
-		<!-- Simulation tuning -->
-		<div class="space-y-2">
-			<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
-				Simulation
-			</p>
-			{@render sliderRow(
-				'Friction μ',
-				friction,
-				0.05,
-				1.0,
-				0.01,
-				'--chart-1',
-				(v) => v.toFixed(2),
-				(v) => (friction = v)
-			)}
-			{@render sliderRow(
-				'Segments',
-				nParticles,
-				8,
-				128,
-				4,
-				'--chart-4',
-				(v) => `${v.toFixed(0)}`,
-				(v) => {
-					nParticles = v;
-					spawnRing(posX, v);
-				}
-			)}
-		</div>
-
-		<!-- Toggles + Reset -->
-		<div class="flex flex-wrap items-center gap-4">
-			<label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
-				<input type="checkbox" bind:checked={showDebug} style="accent-color: var(--chart-1);" />
-				Debug
-			</label>
-			<label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
-				<input type="checkbox" bind:checked={physicsOn} style="accent-color: var(--chart-1);" />
-				Physics
-			</label>
+		<!-- Toolbar: Reset, Debug, Settings toggle -->
+		<div class="flex flex-wrap items-center gap-2">
 			<button
 				onclick={() => spawnRing(isFace ? -cs * 1.5 : -(chamferLength + cs))}
 				class="rounded border border-border bg-background px-3 py-1 text-[10px] text-foreground hover:bg-muted"
 			>
 				Reset
 			</button>
+			<label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
+				<input type="checkbox" bind:checked={showDebug} style="accent-color: var(--chart-1);" />
+				Debug
+			</label>
+			<button
+				onclick={() => (showSettings = !showSettings)}
+				class="ml-auto rounded border border-border bg-background px-3 py-1 text-[10px] text-foreground hover:bg-muted"
+			>
+				{showSettings ? 'Hide' : 'Show'} settings
+			</button>
 		</div>
 
-		<!-- Status cards -->
-		<div class="grid {isFace ? 'grid-cols-1' : 'grid-cols-2'} gap-2">
-			{@render card(
-				'Compression',
-				`${(sqEst * 100).toFixed(1)}%`,
-				sqEst > 0.25 ? 'var(--destructive)' : sqEst > 0.005 ? 'var(--chart-1)' : 'var(--chart-2)',
-				sqEst > 0.25 ? 'Exceeds 25%' : sqEst > 0.15 ? 'Nominal' : sqEst > 0.005 ? 'Light' : 'None'
-			)}
-			{#if !isFace}
-				{@render card(
-					'Chamfer depth',
-					`${chR.toFixed(2)} mm`,
-					chR >= cs
-						? 'var(--chart-2)'
-						: chR >= glandDepth - clearance
-							? 'var(--chart-1)'
-							: 'var(--destructive)',
-					chR >= cs ? '✓ Clears CS' : chR >= glandDepth - clearance ? '⚠ Tight' : '✗ Blocked'
-				)}
-			{/if}
-		</div>
+		<!-- Collapsible settings -->
+		{#if showSettings}
+			<div class="space-y-4 rounded-md border border-border bg-muted/20 p-3">
+				<div class="space-y-2">
+					<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+						Damping
+					</p>
+					{@render sliderRow(
+						'Particle',
+						pDamp,
+						0,
+						0.2,
+						0.005,
+						'--chart-2',
+						(v) => v.toFixed(3),
+						(v) => (pDamp = v)
+					)}
+					{@render sliderRow(
+						'Structural',
+						structDamp,
+						0,
+						1.0,
+						0.01,
+						'--chart-2',
+						(v) => v.toFixed(2),
+						(v) => (structDamp = v)
+					)}
+					{@render sliderRow(
+						'Tangential',
+						tangentialDamp,
+						0,
+						5.0,
+						0.05,
+						'--chart-2',
+						(v) => v.toFixed(2),
+						(v) => (tangentialDamp = v)
+					)}
+				</div>
+				<div class="space-y-2">
+					<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+						Simulation
+					</p>
+					{@render sliderRow(
+						'Friction μ',
+						friction,
+						0.05,
+						1.0,
+						0.01,
+						'--chart-1',
+						(v) => v.toFixed(2),
+						(v) => (friction = v)
+					)}
+					{@render sliderRow(
+						'Segments',
+						nParticles,
+						8,
+						128,
+						4,
+						'--chart-4',
+						(v) => `${v.toFixed(0)}`,
+						(v) => {
+							nParticles = v;
+							spawnRing(posX, v);
+						}
+					)}
+				</div>
+				<label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
+					<input type="checkbox" bind:checked={physicsOn} style="accent-color: var(--chart-1);" />
+					Physics enabled
+				</label>
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -1464,11 +1589,10 @@
 	</div>
 {/snippet}
 
-{#snippet card(label: string, value: string, color: string, sub: string)}
+{#snippet card(label: string, value: string, color: string)}
 	<div class="rounded-md border border-border bg-muted/30 px-3 py-2">
 		<div class="text-[9px] uppercase tracking-wide text-muted-foreground">{label}</div>
 		<div class="mt-0.5 font-mono text-lg font-semibold" style="color: {color};">{value}</div>
-		<div class="text-[9px] text-muted-foreground">{sub}</div>
 	</div>
 {/snippet}
 
@@ -1496,6 +1620,19 @@
 		stroke-width: 2px;
 		opacity: 0.55;
 		fill: none;
+	}
+	.seated-edge {
+		stroke: var(--chart-1);
+		stroke-width: 2.5px;
+		opacity: 0.85;
+		fill: none;
+	}
+	.seated-label {
+		font-size: 9px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		fill: var(--chart-1);
+		opacity: 0.85;
 	}
 	.chamfer-edge {
 		stroke: var(--chart-1);

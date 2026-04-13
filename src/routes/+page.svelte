@@ -1020,6 +1020,9 @@
 						clearance={0}
 						stretchPercent={faceResults.stretch.nominal}
 						grooveRadii={faceParsed()!.grooveRadii.nominal}
+						grooveDia={(faceParsed()!.grooveOD.nominal + faceParsed()!.grooveID.nominal) / 2}
+						oRingId={faceParsed()!.oRingID.nominal}
+						boreDia={faceParsed()!.grooveOD.nominal}
 						{sealType}
 					/>
 				{/if}
@@ -1036,6 +1039,9 @@
 						clearance={(parsed()!.boreDia.nominal - parsed()!.pistonDia.nominal) / 2}
 						stretchPercent={results.stretch.nominal}
 						grooveRadii={parsed()!.grooveRadii.nominal}
+						grooveDia={parsed()!.grooveDia.nominal}
+						oRingId={parsed()!.oRingID.nominal}
+						boreDia={parsed()!.boreDia.nominal}
 						{sealType}
 					/>
 				{/if}
