@@ -41,6 +41,7 @@
 
 	// ── Sim constants ──────────────────────────────────────────────────
 	const DT = 1 / 480;
+	let simSpeed = $state(4);
 
 	// ── User state (sim controls) ──────────────────────────────────────
 	let dragging = $state(false);
@@ -60,7 +61,7 @@
 	let pDamp = $state(0.005);
 	let structDamp = $state(0.5);
 	let tangentialDamp = $state(1.0);
-	let nParticles = $state(64);
+	let nParticles = $state(32);
 
 	// ── Derived geometry ───────────────────────────────────────────────
 	const r0 = $derived(cs / 2);
@@ -223,11 +224,31 @@
 	let dynamicStretch = $state(0);
 
 	// ── SVG derived ────────────────────────────────────────────────────
-	const oPath = $derived(
-		renderPts.length > 2
-			? `M ${renderPts.map((p) => `${mmX(p.x).toFixed(1)},${mmY(p.y).toFixed(1)}`).join(' L ')} Z`
-			: ''
-	);
+	// Smooth closed Catmull-Rom spline through particle positions
+	const oPath = $derived.by(() => {
+		const n = renderPts.length;
+		if (n < 3) return '';
+		const sx = (i: number) => mmX(renderPts[((i % n) + n) % n].x);
+		const sy = (i: number) => mmY(renderPts[((i % n) + n) % n].y);
+		const t = 1 / 3; // tension (Catmull-Rom → cubic bezier control point fraction)
+		let d = `M ${sx(0).toFixed(1)},${sy(0).toFixed(1)}`;
+		for (let i = 0; i < n; i++) {
+			const x0 = sx(i - 1),
+				y0 = sy(i - 1);
+			const x1 = sx(i),
+				y1 = sy(i);
+			const x2 = sx(i + 1),
+				y2 = sy(i + 1);
+			const x3 = sx(i + 2),
+				y3 = sy(i + 2);
+			const cp1x = x1 + (x2 - x0) * t;
+			const cp1y = y1 + (y2 - y0) * t;
+			const cp2x = x2 - (x3 - x1) * t;
+			const cp2y = y2 - (y3 - y1) * t;
+			d += ` C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+		}
+		return d + ' Z';
+	});
 	const debugSegs = $derived(
 		showDebug ? buildSegs(chamferLength, chamferAngle, isFace ? posYmm : posXmm) : []
 	);
@@ -548,14 +569,8 @@
 	}
 
 	function spawnRing(housingXmm = posX, n = nParticles) {
-		// Spawn at full CS radius (unstretched, uncompressed)
-		const spawnR = r0;
-		// Clamp center Y so the ring doesn't clip groove floor or top surface
-		const minCy = clearance + spawnR; // top: don't clip rod/piston surface
-		const maxCy = glandDepth - spawnR; // bottom: don't clip groove floor
-		const naturalCy = glandDepth - spawnR; // prefer sitting on groove floor
-		const cy = Math.max(minCy, Math.min(maxCy, naturalCy));
-		particles = createRing(0, cy, spawnR, n);
+		const spawnR = r0; // unstretched CS/2
+		particles = createRing(0, glandDepth - cs / 2, spawnR, n);
 		posX = housingXmm;
 		vel = 0;
 		targetX = housingXmm;
@@ -632,7 +647,7 @@
 		function step() {
 			if (!running) return;
 			const now = performance.now();
-			acc += Math.min((now - lastT) / 1000, 0.05);
+			acc += Math.min((now - lastT) / 1000, 0.05) * simSpeed;
 			lastT = now;
 
 			const pts = particles;
@@ -1287,22 +1302,29 @@
 				>
 
 				<!-- Piston body with groove (stationary, at bottom) -->
-				<rect
-					x={0}
-					y={rodOdY}
-					width={Math.max(0, gL)}
-					height={viewH - rodOdY}
+				{@const stepX = gR + (viewW - gR) * 0.7}
+				{@const stepH = (viewH - rodOdY) * 0.5}
+				{@const shaftY = rodOdY + stepH}
+				{@const filletR = Math.min(stepH * 0.4, 20)}
+				{@const endFaceX = gL * 0.15}
+				{@const endChamLen = (viewH - rodOdY) * 0.35}
+				<!-- Left side: piston end face with chamfer -->
+				<path
+					d="M {endFaceX} {rodOdY + endChamLen} L {endFaceX +
+						endChamLen} {rodOdY} L {gL} {rodOdY} L {gL} {viewH} L {endFaceX} {viewH} Z"
 					fill="url(#{bottomHatch})"
 					stroke="none"
 				/>
-				<rect
-					x={gR}
-					y={rodOdY}
-					width={Math.max(0, viewW - gR)}
-					height={viewH - rodOdY}
+				{@const sCham = filletR * 1.0}
+				<!-- Right side: stepped piston (head → chamfer → shoulder → shaft) -->
+				<path
+					d="M {gR} {rodOdY} L {stepX - sCham} {rodOdY} L {stepX} {rodOdY +
+						sCham} L {stepX} {shaftY - filletR} A {filletR} {filletR} 0 0 0 {stepX +
+						filletR} {shaftY} L {viewW} {shaftY} L {viewW} {viewH} L {gR} {viewH} Z"
 					fill="url(#{bottomHatch})"
 					stroke="none"
 				/>
+				<!-- Under groove floor -->
 				<rect
 					x={gL}
 					y={grooveBottomY}
@@ -1311,8 +1333,49 @@
 					fill="url(#{bottomHatch})"
 					stroke="none"
 				/>
-				<line x1={0} y1={rodOdY} x2={gL - tRpx} y2={rodOdY} class="surface-edge" />
-				<line x1={gR + tRpx} y1={rodOdY} x2={viewW} y2={rodOdY} class="surface-edge" />
+				<!-- End face -->
+				<line
+					x1={endFaceX}
+					y1={rodOdY + endChamLen}
+					x2={endFaceX}
+					y2={viewH}
+					class="surface-edge"
+				/>
+				<!-- Chamfer -->
+				<line
+					x1={endFaceX}
+					y1={rodOdY + endChamLen}
+					x2={endFaceX + endChamLen}
+					y2={rodOdY}
+					class="surface-edge"
+				/>
+				<!-- Piston head OD surface -->
+				<line
+					x1={endFaceX + endChamLen}
+					y1={rodOdY}
+					x2={gL - tRpx}
+					y2={rodOdY}
+					class="surface-edge"
+				/>
+				<line x1={gR + tRpx} y1={rodOdY} x2={stepX - sCham} y2={rodOdY} class="surface-edge" />
+				<!-- Shoulder chamfer -->
+				<line x1={stepX - sCham} y1={rodOdY} x2={stepX} y2={rodOdY + sCham} class="surface-edge" />
+				<!-- Shoulder face -->
+				<line
+					x1={stepX}
+					y1={rodOdY + sCham}
+					x2={stepX}
+					y2={shaftY - filletR}
+					class="surface-edge"
+				/>
+				<!-- Concave fillet (inner corner) -->
+				<path
+					d="M {stepX} {shaftY - filletR} A {filletR} {filletR} 0 0 0 {stepX + filletR} {shaftY}"
+					class="surface-edge"
+					fill="none"
+				/>
+				<!-- Shaft surface -->
+				<line x1={stepX + filletR} y1={shaftY} x2={viewW} y2={shaftY} class="surface-edge" />
 				<!-- Groove corner fillets (bottom, convex — metal fill at radii) -->
 				<path
 					d="M {gL} {grooveBottomY} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
@@ -1461,7 +1524,7 @@
 				90,
 				5,
 				'--chart-2',
-				(v) => `${v.toFixed(0)} (E=${youngsE.toFixed(1)} MPa)`,
+				(v) => `${v.toFixed(0)} (${youngsE.toFixed(1)} MPa)`,
 				(v) => (shoreA = v)
 			)}
 		</div>
@@ -1497,8 +1560,8 @@
 						'Particle',
 						pDamp,
 						0,
-						0.2,
-						0.005,
+						0.01,
+						0.001,
 						'--chart-2',
 						(v) => v.toFixed(3),
 						(v) => (pDamp = v)
@@ -1542,7 +1605,7 @@
 						'Segments',
 						nParticles,
 						8,
-						128,
+						64,
 						4,
 						'--chart-4',
 						(v) => `${v.toFixed(0)}`,
@@ -1550,6 +1613,16 @@
 							nParticles = v;
 							spawnRing(posX, v);
 						}
+					)}
+					{@render sliderRow(
+						'Speed',
+						simSpeed,
+						0.2,
+						10,
+						0.2,
+						'--chart-4',
+						(v) => `${v.toFixed(1)}x`,
+						(v) => (simSpeed = v)
 					)}
 				</div>
 				<label class="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -1659,7 +1732,7 @@
 		font-size: 10px;
 		opacity: 0.35;
 	}
-	.debug-dot {
+.debug-dot {
 		fill: var(--chart-1);
 		opacity: 0.6;
 	}
