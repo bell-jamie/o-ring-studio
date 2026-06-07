@@ -30,6 +30,9 @@
 		inputs.grooveWidth.nominal = String(result.grooveWidth);
 		inputs.grooveRadii.nominal = '0.3';
 		inputs.oRingID.nominal = String(result.oRingID);
+		ensureFit(inputs.boreDia, BORE_FIT);
+		ensureFit(inputs.pistonDia, PISTON_FIT);
+		ensureFit(inputs.grooveDia, grooveFit);
 	}
 
 	function setSealType(newType: SealType) {
@@ -55,16 +58,30 @@
 		}
 	}
 
-	// Input state — strings for binding to number inputs
+	// Default ISO 286 fit classes for the diameters that support them
+	const BORE_FIT = 'H8';
+	const PISTON_FIT = 'f7';
+	const grooveFit = $derived(sealType === 'piston' ? 'h9' : 'H9');
+
+	// Input state — strings for binding to number inputs.
+	// fitClass on the ISO-fit diameters: empty = custom tolerances.
 	let inputs = $state({
-		boreDia: { nominal: '', upperTol: '', lowerTol: '' },
-		pistonDia: { nominal: '', upperTol: '', lowerTol: '' },
-		grooveDia: { nominal: '', upperTol: '', lowerTol: '' },
+		boreDia: { nominal: '', upperTol: '', lowerTol: '', fitClass: '' },
+		pistonDia: { nominal: '', upperTol: '', lowerTol: '', fitClass: '' },
+		grooveDia: { nominal: '', upperTol: '', lowerTol: '', fitClass: '' },
 		grooveWidth: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
 		grooveRadii: { nominal: '', upperTol: '0.1', lowerTol: '0.1' },
 		oRingCS: { nominal: '', upperTol: '', lowerTol: '' },
 		oRingID: { nominal: '', upperTol: '', lowerTol: '' }
 	});
+
+	/** Apply the default ISO fit to a diameter only if it has no tolerances set yet. */
+	function ensureFit(
+		dim: { fitClass: string; upperTol: string; lowerTol: string },
+		cls: string
+	) {
+		if (!dim.fitClass && !dim.upperTol && !dim.lowerTol) dim.fitClass = cls;
+	}
 
 	// Face seal input state
 	let faceInputs = $state({
@@ -247,6 +264,9 @@
 		inputs.pistonDia.nominal = String(h.pistonDia);
 		inputs.grooveDia.nominal = String(h.grooveDia);
 		inputs.grooveWidth.nominal = String(h.grooveWidth);
+		ensureFit(inputs.boreDia, BORE_FIT);
+		ensureFit(inputs.pistonDia, PISTON_FIT);
+		ensureFit(inputs.grooveDia, grooveFit);
 	}
 
 	function onGenerateFromBore() {
@@ -466,28 +486,31 @@
 								label="Bore Diameter"
 								placeholder="-"
 								fitType="hole"
-								defaultFitClass="H8"
+								defaultFitClass={BORE_FIT}
 								bind:nominal={inputs.boreDia.nominal}
 								bind:upperTol={inputs.boreDia.upperTol}
 								bind:lowerTol={inputs.boreDia.lowerTol}
+								bind:fitClass={inputs.boreDia.fitClass}
 							/>
 							<TolerancedInput
 								label={sealType === 'piston' ? 'Piston Diameter' : 'Rod Diameter'}
 								placeholder="-"
 								fitType="shaft"
-								defaultFitClass="f7"
+								defaultFitClass={PISTON_FIT}
 								bind:nominal={inputs.pistonDia.nominal}
 								bind:upperTol={inputs.pistonDia.upperTol}
 								bind:lowerTol={inputs.pistonDia.lowerTol}
+								bind:fitClass={inputs.pistonDia.fitClass}
 							/>
 							<TolerancedInput
 								label="Groove Diameter"
 								placeholder="-"
 								fitType={sealType === 'piston' ? 'shaft' : 'hole'}
-								defaultFitClass={sealType === 'piston' ? 'h9' : 'H9'}
+								defaultFitClass={grooveFit}
 								bind:nominal={inputs.grooveDia.nominal}
 								bind:upperTol={inputs.grooveDia.upperTol}
 								bind:lowerTol={inputs.grooveDia.lowerTol}
+								bind:fitClass={inputs.grooveDia.fitClass}
 							/>
 							<TolerancedInput
 								label="Groove Width"
@@ -512,7 +535,10 @@
 					<div class="mb-4 flex flex-col gap-2">
 						<h2 class="text-sm font-medium text-foreground">O-Ring Dimensions</h2>
 						<div class="flex items-center gap-2">
-							<span class="text-[10px] text-muted-foreground">ISO 3601-1:2012</span>
+							<span
+								class="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+								>ISO 3601-1:2012</span
+							>
 							{#if matchedSize?.dash}
 								<span
 									class="rounded bg-foreground px-1.5 py-0.5 font-mono text-[10px] font-bold text-background"

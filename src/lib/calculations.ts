@@ -333,24 +333,30 @@ export function generateFromBore(
 		}
 	}
 
-	// Derive all dimensions anchored to the given bore
-	const grooveDia = roundNice(best.id * (1 + targetStretch / 100));
-	const csStretched = cs * Math.pow(best.id / grooveDia, 2 / 3);
-	const ih = csStretched * (1 - targetCompression / 100);
-
-	let boreDia: number, pistonDia: number, grooveDepth: number;
-
-	if (sealType === 'piston') {
-		// Groove on piston: grooveDia < pistonDia ≤ boreDia
-		boreDia = bore;
-		pistonDia = bore;
-		grooveDepth = (pistonDia - grooveDia) / 2;
-	} else {
-		// Groove in housing: rodDia ≤ boreDia < grooveDia
-		boreDia = bore;
-		pistonDia = bore;
-		grooveDepth = (grooveDia - boreDia) / 2;
+	// Anchor the groove diameter to the fixed bore so the o-ring hits the target
+	// compression. Installed height = (bore - grooveDia)/2 (piston) controls the
+	// squeeze, and the stretched CS depends on grooveDia, so solve iteratively.
+	// (Stretch is allowed to float; best.id was chosen to keep it near target.)
+	let grooveDia = best.id * (1 + targetStretch / 100); // starting estimate
+	for (let i = 0; i < 12; i++) {
+		const csS = cs * Math.pow(best.id / grooveDia, 2 / 3);
+		const ihTarget = csS * (1 - targetCompression / 100);
+		const next = sealType === 'piston' ? bore - 2 * ihTarget : bore + 2 * ihTarget;
+		if (Math.abs(next - grooveDia) < 1e-7) {
+			grooveDia = next;
+			break;
+		}
+		grooveDia = next;
 	}
+	// grooveDia is a derived (machined) dimension — round finely so the
+	// compression target isn't lost to coarse "nice number" rounding.
+	grooveDia = Math.round(grooveDia * 100) / 100;
+
+	const csStretched = cs * Math.pow(best.id / grooveDia, 2 / 3);
+	const boreDia = bore;
+	const pistonDia = bore;
+	const grooveDepth =
+		sealType === 'piston' ? (pistonDia - grooveDia) / 2 : (grooveDia - boreDia) / 2;
 
 	if (grooveDepth <= 0) return null;
 

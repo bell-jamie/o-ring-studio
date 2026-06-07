@@ -45,6 +45,12 @@
 
 	// ── User state (sim controls) ──────────────────────────────────────
 	let dragging = $state(false);
+	let oringDragging = $state(false);
+	let oringHover = $state(false);
+	let oringTargetX = 0; // physics mm — updated from pointer; read in RAF loop
+	let oringTargetY = 0;
+	let oringGrabOffsetX = 0; // cursor-to-center offset at grab, preserved during drag
+	let oringGrabOffsetY = 0;
 	let faceSeated = $state(false);
 	let faceAtSeat = $state(false);
 	let showDebug = $state(false);
@@ -593,9 +599,49 @@
 	let dragStartMm = 0;
 	let seatedAtPixel: number | null = null; // pixel when plate first reached seated
 
+	function pointerToPhys(e: PointerEvent): { x: number; y: number } {
+		const svg = e.currentTarget as SVGSVGElement;
+		const rect = svg.getBoundingClientRect();
+		const svgX = ((e.clientX - rect.left) / rect.width) * viewW;
+		const svgY = ((e.clientY - rect.top) / rect.height) * viewH;
+		return {
+			x: (svgX - grooveSvgX) / S,
+			y: sealType === 'piston' ? (svgY - boreWallY) / S : (grooveBottomY - svgY) / S
+		};
+	}
+	function isOnOring(physX: number, physY: number): boolean {
+		const n = nParticles;
+		if (particles.length !== n + 1) return false;
+		// Point-in-polygon against the actual deformed perimeter (ray-cast)
+		let inside = false;
+		for (let i = 0, j = n - 1; i < n; j = i++) {
+			const xi = particles[i].x,
+				yi = particles[i].y;
+			const xj = particles[j].x,
+				yj = particles[j].y;
+			if (yi > physY !== yj > physY) {
+				const xCross = ((xj - xi) * (physY - yi)) / (yj - yi) + xi;
+				if (physX < xCross) inside = !inside;
+			}
+		}
+		return inside;
+	}
+
 	function onDown(e: PointerEvent) {
 		e.preventDefault();
 		(e.target as Element).setPointerCapture(e.pointerId);
+		const phys = pointerToPhys(e);
+		if (isOnOring(phys.x, phys.y)) {
+			const c = particles[nParticles];
+			// Preserve click offset so the center doesn't jump to the cursor — it only
+			// moves once the pointer moves. target = cursor + offset = center initially.
+			oringGrabOffsetX = c.x - phys.x;
+			oringGrabOffsetY = c.y - phys.y;
+			oringTargetX = c.x;
+			oringTargetY = c.y;
+			oringDragging = true;
+			return;
+		}
 		dragStartPixel = isFace ? e.clientY : e.clientX;
 		// Anchor to actual position, not stale target (prevents teleport)
 		dragStartMm = posX;
@@ -605,7 +651,18 @@
 		if (isFace && faceSeated) faceSeated = false;
 	}
 	function onMove(e: PointerEvent) {
-		if (!dragging) return;
+		if (oringDragging) {
+			const phys = pointerToPhys(e);
+			oringTargetX = phys.x + oringGrabOffsetX;
+			oringTargetY = phys.y + oringGrabOffsetY;
+			return;
+		}
+		if (!dragging) {
+			// Track hover for cursor feedback
+			const phys = pointerToPhys(e);
+			oringHover = isOnOring(phys.x, phys.y);
+			return;
+		}
 		const pixel = isFace ? e.clientY : e.clientX;
 		const sign = isFace ? -1 : 1;
 		const raw = dragStartMm + ((pixel - dragStartPixel) / S) * sign;
@@ -631,6 +688,10 @@
 			faceSeated = false;
 		}
 		dragging = false;
+		oringDragging = false;
+	}
+	function onLeave() {
+		oringHover = false;
 	}
 
 	// ── RAF physics loop ───────────────────────────────────────────────
@@ -689,15 +750,21 @@
 				const rSpoke = csVal / 2; // rest length of radial spokes
 				// Rest area = polygon area at spawn (not π*r²) so pressure starts at zero
 				const restArea = (nPts / 2) * (csVal / 2) ** 2 * Math.sin((2 * Math.PI) / nPts);
-				// Dynamic stretch: as center particle moves radially, effective diameter changes
-				// Piston: +Y = inward = smaller dia = less stretch (radialSign = -1)
-				// Rod: +Y = outward = larger dia = more stretch (radialSign = +1)
-				const radialSign = sealType === 'rod' ? 1 : -1;
-				const cy = pts[ci].y;
-				const spawnCy = glandDepth - csVal / 2; // nominal center Y (sitting on groove floor)
+				// Dynamic stretch: as center particle moves radially, effective diameter changes.
+				// Piston/Rod 2D view: radial axis is Y (Piston +Y = inward, Rod +Y = outward).
+				// Face seal 2D view: Y is axial (compression); radial axis is X.
 				const oRingID = grooveDia / (1 + stretchPercent / 100);
-				const dy = cy - spawnCy;
-				const rawStretchFrac = stretchPercent / 100 + (radialSign * 2 * dy) / oRingID;
+				let radialDisp: number;
+				let radialSign: number;
+				if (sealType === 'face') {
+					radialDisp = pts[ci].x; // spawn X = 0; +X = outward = more stretch
+					radialSign = 1;
+				} else {
+					const spawnCy = glandDepth - csVal / 2;
+					radialDisp = pts[ci].y - spawnCy;
+					radialSign = sealType === 'rod' ? 1 : -1;
+				}
+				const rawStretchFrac = stretchPercent / 100 + (radialSign * 2 * radialDisp) / oRingID;
 				const stretchFrac = Math.max(0, rawStretchFrac);
 				lastStretchFrac = rawStretchFrac;
 
@@ -873,6 +940,18 @@
 					);
 				}
 
+				// Mouse drag on o-ring: critically damped spring on center particle toward cursor.
+				// dragK is kept well below contactK so wall contact always wins — ring
+				// visibly stretches under the cursor but can't be pulled through walls.
+				// Scales with material (via structK → Young's modulus) so harder rings feel stiffer.
+				if (oringDragging) {
+					const centerMass = pm * nPts;
+					const dragK = structK * 8;
+					const dragDamp = 2 * Math.sqrt(dragK * centerMass);
+					fx[ci] += dragK * (oringTargetX - pts[ci].x) - dragDamp * pts[ci].vx;
+					fy[ci] += dragK * (oringTargetY - pts[ci].y) - dragDamp * pts[ci].vy;
+				}
+
 				// Integrate all particles (perimeter + center)
 				// Light outer particles, heavy center particle
 				const pmCenter = pm * nPts;
@@ -971,11 +1050,16 @@
 			width="100%"
 			role="img"
 			aria-label="O-ring soft body simulation"
-			style="display:block; touch-action:none;"
+			style="display:block; touch-action:none; cursor: {oringDragging
+				? 'grabbing'
+				: oringHover
+					? 'grab'
+					: 'default'};"
 			onpointerdown={onDown}
 			onpointermove={onMove}
 			onpointerup={onUp}
 			onpointercancel={onUp}
+			onpointerleave={onLeave}
 		>
 			<defs>
 				<pattern

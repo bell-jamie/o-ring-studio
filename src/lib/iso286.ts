@@ -25,14 +25,43 @@ export function shaftClasses(): string[] {
 	return shaftDeviations();
 }
 
-/** Validate that a tolerance class string looks correct for the given fit type */
-export function isValidClass(toleranceClass: string, fitType: FitType): boolean {
-	const devs = fitType === 'hole' ? holeDeviations() : shaftDeviations();
-	// Extract deviation letters (everything before the grade number)
-	const match = toleranceClass.match(/^([A-Za-z]+)(\d+)$/);
-	if (!match) return false;
+export interface ClassValidation {
+	valid: boolean;
+	/** Human-readable explanation, present only when `valid` is false */
+	error?: string;
+}
+
+/**
+ * Validate the format of a tolerance class string (deviation letter + IT grade)
+ * for the given fit type. This checks the class in isolation — it does not check
+ * whether a particular nominal size is in range (use `lookupIso286` for that).
+ */
+export function validateClass(toleranceClass: string, fitType: FitType): ClassValidation {
+	const cls = toleranceClass.trim();
+	if (!cls) return { valid: true }; // empty = no class chosen, fall back to manual tolerances
+
+	const match = cls.match(/^([A-Za-z]+)(\d{1,2})$/);
+	if (!match) {
+		return { valid: false, error: 'Use a deviation letter + grade, e.g. H7' };
+	}
+
 	const [, deviation, grade] = match;
-	const gradeNum = parseInt(grade);
-	if (gradeNum < 1 || gradeNum > 18) return false;
-	return devs.includes(deviation);
+	const devs = fitType === 'hole' ? holeDeviations() : shaftDeviations();
+
+	if (!devs.includes(deviation)) {
+		// Hole fits are uppercase, shaft fits lowercase — flag a likely case mix-up.
+		const swapped = fitType === 'hole' ? deviation.toUpperCase() : deviation.toLowerCase();
+		if (devs.includes(swapped)) {
+			const casing = fitType === 'hole' ? 'uppercase' : 'lowercase';
+			return { valid: false, error: `${fitType === 'hole' ? 'Bore' : 'Shaft'} fits use ${casing}, e.g. ${swapped}${grade}` };
+		}
+		return { valid: false, error: `"${deviation}" is not a valid ${fitType} deviation` };
+	}
+
+	const gradeNum = parseInt(grade, 10);
+	if (gradeNum < 1 || gradeNum > 18) {
+		return { valid: false, error: 'Grade must be between IT1 and IT18' };
+	}
+
+	return { valid: true };
 }
