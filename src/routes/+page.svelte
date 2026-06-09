@@ -1,6 +1,14 @@
 <script lang="ts">
-	import type { PistonSealInputs, PistonSealResults, FaceSealInputs, FaceSealResults, AcceptanceCriteria, SealType } from '$lib/types';
-	import { calculateAll, calculateFaceSeal, generateHousing, generateFromBore, generateFaceSealFromORing, generateFaceSealFromGrooveID, applyEccentricity } from '$lib/calculations';
+	import type { PistonSealInputs, FaceSealInputs, AcceptanceCriteria, SealType } from '$lib/types';
+	import {
+		calculateAll,
+		calculateFaceSeal,
+		generateHousing,
+		generateFromBore,
+		generateFaceSealFromORing,
+		generateFaceSealFromGrooveID,
+		applyEccentricity
+	} from '$lib/calculations';
 	import { lookupCSTolerance, lookupIDTolerance, type OringClass } from '$lib/iso3601-tol';
 	import TolerancedInput from '$lib/components/TolerancedInput.svelte';
 	import ResultRow from '$lib/components/ResultRow.svelte';
@@ -41,7 +49,10 @@
 		sealType = newType;
 
 		// Auto-recalculate dimensions when switching between piston and rod
-		if ((prevType === 'piston' || prevType === 'rod') && (newType === 'piston' || newType === 'rod')) {
+		if (
+			(prevType === 'piston' || prevType === 'rod') &&
+			(newType === 'piston' || newType === 'rod')
+		) {
 			const bore = parseFloat(inputs.boreDia.nominal);
 			const cs = parseFloat(inputs.oRingCS.nominal);
 			if (!isNaN(bore) && bore > 0 && !isNaN(cs) && cs > 0) {
@@ -76,10 +87,7 @@
 	});
 
 	/** Apply the default ISO fit to a diameter only if it has no tolerances set yet. */
-	function ensureFit(
-		dim: { fitClass: string; upperTol: string; lowerTol: string },
-		cls: string
-	) {
+	function ensureFit(dim: { fitClass: string; upperTol: string; lowerTol: string }, cls: string) {
 		if (!dim.fitClass && !dim.upperTol && !dim.lowerTol) dim.fitClass = cls;
 	}
 
@@ -90,10 +98,6 @@
 		housingHeight: { nominal: '', upperTol: '0.05', lowerTol: '0.05' },
 		grooveRadii: { nominal: '', upperTol: '0.1', lowerTol: '0.1' }
 	});
-
-	// Active o-ring inputs — shared between all seal types
-	const activeORingCS = $derived(inputs.oRingCS);
-	const activeORingID = $derived(inputs.oRingID);
 
 	// ISO 3601 auto-populate tolerances when nominal or class changes
 	$effect(() => {
@@ -404,7 +408,6 @@
 		compression: { min: 13, max: 36 },
 		fill: { min: 0, max: 85 }
 	};
-	const activeCriteria = $derived(sealType === 'face' ? FACE_CRITERIA : CRITERIA);
 	const extrusionGapCriteria = $derived<AcceptanceCriteria>({ min: 0, max: extrusionGapMax });
 </script>
 
@@ -414,30 +417,31 @@
 		<div class="mx-auto max-w-5xl px-6 py-5 flex items-center justify-between">
 			<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
 			<div class="flex items-center gap-3">
-			<button
-				onclick={clearAll}
-				class="rounded border border-input px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-			>Clear</button>
-			<div class="flex rounded border border-input text-xs font-medium">
 				<button
-					onclick={() => setSealType('piston')}
-					class="rounded-l px-3 py-1 transition-colors {sealType === 'piston'
-						? 'bg-primary text-primary-foreground'
-						: 'text-muted-foreground hover:bg-muted'}"
-				>Piston Seal</button>
-				<button
-					onclick={() => setSealType('rod')}
-					class="border-l border-input px-3 py-1 transition-colors {sealType === 'rod'
-						? 'bg-primary text-primary-foreground'
-						: 'text-muted-foreground hover:bg-muted'}"
-				>Rod Seal</button>
-				<button
-					onclick={() => setSealType('face')}
-					class="rounded-r border-l border-input px-3 py-1 transition-colors {sealType === 'face'
-						? 'bg-primary text-primary-foreground'
-						: 'text-muted-foreground hover:bg-muted'}"
-				>Face Seal</button>
-			</div>
+					onclick={clearAll}
+					class="rounded border border-input px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+					>Clear</button
+				>
+				<div class="flex rounded border border-input text-xs font-medium">
+					<button
+						onclick={() => setSealType('piston')}
+						class="rounded-l px-3 py-1 transition-colors {sealType === 'piston'
+							? 'bg-primary text-primary-foreground'
+							: 'text-muted-foreground hover:bg-muted'}">Piston Seal</button
+					>
+					<button
+						onclick={() => setSealType('rod')}
+						class="border-l border-input px-3 py-1 transition-colors {sealType === 'rod'
+							? 'bg-primary text-primary-foreground'
+							: 'text-muted-foreground hover:bg-muted'}">Rod Seal</button
+					>
+					<button
+						onclick={() => setSealType('face')}
+						class="rounded-r border-l border-input px-3 py-1 transition-colors {sealType === 'face'
+							? 'bg-primary text-primary-foreground'
+							: 'text-muted-foreground hover:bg-muted'}">Face Seal</button
+					>
+				</div>
 			</div>
 		</div>
 	</header>
@@ -819,7 +823,9 @@
 							<!-- Eccentricity slider -->
 							<div class="mb-3">
 								<label for="eccentricity-slider" class="flex items-center justify-between text-xs">
-									<span class="text-muted-foreground">{sealType === 'piston' ? 'Piston' : 'Rod'} eccentricity</span>
+									<span class="text-muted-foreground"
+										>{sealType === 'piston' ? 'Piston' : 'Rod'} eccentricity</span
+									>
 									<span class="font-mono text-foreground">{(eccentricity * 100).toFixed(0)}%</span>
 								</label>
 								<input
@@ -987,9 +993,7 @@
 								</div>
 								<div class="flex justify-between gap-4">
 									<dt>Centerline</dt>
-									<dd class="font-mono text-right text-foreground">
-										(grooveOD + grooveID) / 2
-									</dd>
+									<dd class="font-mono text-right text-foreground">(grooveOD + grooveID) / 2</dd>
 								</div>
 							{:else}
 								<div class="flex justify-between gap-4">
@@ -1036,7 +1040,9 @@
 			{#if sealType === 'face'}
 				{#if !faceResults || !faceParsed()}
 					<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
-						<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
+						<p class="text-sm text-muted-foreground">
+							Enter all dimensions to enable the simulator.
+						</p>
 					</div>
 				{:else}
 					<OringSimulator
@@ -1052,25 +1058,23 @@
 						{sealType}
 					/>
 				{/if}
+			{:else if !results || !parsed()}
+				<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
+					<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
+				</div>
 			{:else}
-				{#if !results || !parsed()}
-					<div class="rounded-lg border border-border bg-muted/40 px-4 py-10 text-center">
-						<p class="text-sm text-muted-foreground">Enter all dimensions to enable the simulator.</p>
-					</div>
-				{:else}
-					<OringSimulator
-						cs={parsed()!.oRingCS.nominal}
-						glandDepth={results.installedHeight.nominal}
-						grooveWidth={parsed()!.grooveWidth.nominal}
-						clearance={(parsed()!.boreDia.nominal - parsed()!.pistonDia.nominal) / 2}
-						stretchPercent={results.stretch.nominal}
-						grooveRadii={parsed()!.grooveRadii.nominal}
-						grooveDia={parsed()!.grooveDia.nominal}
-						oRingId={parsed()!.oRingID.nominal}
-						boreDia={parsed()!.boreDia.nominal}
-						{sealType}
-					/>
-				{/if}
+				<OringSimulator
+					cs={parsed()!.oRingCS.nominal}
+					glandDepth={results.installedHeight.nominal}
+					grooveWidth={parsed()!.grooveWidth.nominal}
+					clearance={(parsed()!.boreDia.nominal - parsed()!.pistonDia.nominal) / 2}
+					stretchPercent={results.stretch.nominal}
+					grooveRadii={parsed()!.grooveRadii.nominal}
+					grooveDia={parsed()!.grooveDia.nominal}
+					oRingId={parsed()!.oRingID.nominal}
+					boreDia={parsed()!.boreDia.nominal}
+					{sealType}
+				/>
 			{/if}
 		</section>
 	</main>
@@ -1080,7 +1084,7 @@
 {#if disclaimerOpen}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
-		class="fixed inset-0 z-[2000] flex items-center justify-center bg-black/70 transition-opacity"
+		class="fixed inset-0 z-2000 flex items-center justify-center bg-black/70 transition-opacity"
 		onclick={(e) => {
 			if (e.target === e.currentTarget) closeDisclaimer();
 		}}
@@ -1088,7 +1092,7 @@
 			if (e.key === 'Escape') closeDisclaimer();
 		}}
 	>
-		<div class="w-[90%] max-w-[500px] rounded-xl border border-border bg-card p-8 shadow-lg">
+		<div class="w-[90%] max-w-125 rounded-xl border border-border bg-card p-8 shadow-lg">
 			<h2 class="mb-4 text-2xl font-semibold text-foreground">Disclaimer</h2>
 			<p class="mb-4 leading-relaxed text-muted-foreground">
 				These tools are provided for educational and reference purposes only. The author accepts no

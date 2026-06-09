@@ -53,7 +53,10 @@ export function validateClass(toleranceClass: string, fitType: FitType): ClassVa
 		const swapped = fitType === 'hole' ? deviation.toUpperCase() : deviation.toLowerCase();
 		if (devs.includes(swapped)) {
 			const casing = fitType === 'hole' ? 'uppercase' : 'lowercase';
-			return { valid: false, error: `${fitType === 'hole' ? 'Bore' : 'Shaft'} fits use ${casing}, e.g. ${swapped}${grade}` };
+			return {
+				valid: false,
+				error: `${fitType === 'hole' ? 'Bore' : 'Shaft'} fits use ${casing}, e.g. ${swapped}${grade}`
+			};
 		}
 		return { valid: false, error: `"${deviation}" is not a valid ${fitType} deviation` };
 	}

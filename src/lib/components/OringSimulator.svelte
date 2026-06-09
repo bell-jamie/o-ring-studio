@@ -92,10 +92,14 @@
 	// Housing / rod margins scale with CS so the ring always fills the view
 	const housingShow = $derived(sealType === 'piston' ? cs * 0.71 : cs * 0.43);
 	const rodBodyShow = $derived(sealType === 'piston' ? cs * 0.43 : cs * 0.71);
-	const S = $derived(viewH / (housingShow + glandDepth + rodBodyShow));
-	const boreWallY = $derived(housingShow * S);
-	const rodOdY = $derived((housingShow + clearance) * S);
-	const grooveBottomY = $derived((housingShow + glandDepth) * S);
+	// ZOOM < 1 leaves a margin around the assembly; yOff re-centres it vertically.
+	const ZOOM = 0.9;
+	const contentH = $derived(housingShow + glandDepth + rodBodyShow);
+	const S = $derived((viewH / contentH) * ZOOM);
+	const yOff = $derived((viewH - contentH * S) / 2);
+	const boreWallY = $derived(yOff + housingShow * S);
+	const rodOdY = $derived(yOff + (housingShow + clearance) * S);
+	const grooveBottomY = $derived(yOff + (housingShow + glandDepth) * S);
 	// Physics x=0 is at the groove center (fixed). Housing moves over it.
 	const grooveSvgX = viewW * 0.5;
 	const mmX = (x: number) => grooveSvgX + x * S;
@@ -156,6 +160,36 @@
 	);
 	const tRpx = $derived(0.1 * S);
 
+	// ── Groove path (shared by clearout fill + outline stroke) ─────────
+	// One U-shaped path: opening fillets (tRpx) → walls → floor fillets (grRpx).
+	// Works for either orientation — arc sweep flags follow the opening→floor sign,
+	// so face/rod (groove at top) and piston (groove at bottom) use the same builder.
+	const grooveOpeningY = $derived(sealType === 'piston' ? rodOdY : boreIdSvgY);
+	const grooveFloorY = $derived(sealType === 'piston' ? grooveBottomY : boreWallY);
+	const grooveHatch = $derived(sealType === 'piston' ? bottomHatch : topHatch);
+	function groovePath(openingY: number, floorY: number): string {
+		const s = Math.sign(floorY - openingY); // -1: floor above opening (face/rod); +1: below (piston)
+		const tSweep = s > 0 ? 1 : 0;
+		const gSweep = s > 0 ? 0 : 1;
+		const oWall = openingY + s * tRpx; // opening-fillet tangent on the wall
+		const fWall = floorY - s * grRpx; // floor-fillet tangent on the wall
+		return (
+			`M ${gL - tRpx} ${openingY}` +
+			` A ${tRpx} ${tRpx} 0 0 ${tSweep} ${gL} ${oWall}` +
+			` L ${gL} ${fWall}` +
+			` A ${grRpx} ${grRpx} 0 0 ${gSweep} ${gL + grRpx} ${floorY}` +
+			` L ${gR - grRpx} ${floorY}` +
+			` A ${grRpx} ${grRpx} 0 0 ${gSweep} ${gR} ${fWall}` +
+			` L ${gR} ${oWall}` +
+			` A ${tRpx} ${tRpx} 0 0 ${tSweep} ${gR + tRpx} ${openingY}`
+		);
+	}
+	const grooveD = $derived(groovePath(grooveOpeningY, grooveFloorY));
+
+	// Render state synced from physics each frame (mutated in RAF loop)
+	let sqEst = $state(0);
+	let dynamicStretch = $state(0);
+
 	// Status card colours (match analytical ResultRow: emerald/amber/red)
 	function statusColor(val: number, min: number, max: number): string {
 		const margin = (max - min) * 0.2;
@@ -177,8 +211,6 @@
 	//   No stretch: innerRadius = oRingID/2
 	//   Negative stretch: innerRadius = boreRadius - cs (compressed to fit bore)
 	// Piston seal: o-ring protrudes above piston surface = cs - grooveDepth
-	const freeORingID = $derived(grooveDia / (1 + stretchPercent / 100));
-	const boreRadius = $derived(grooveDia / 2 - (glandDepth - clearance));
 	const oRingProtrusion = $derived.by(() => {
 		if (sealType === 'rod') {
 			if (grooveDia > oRingId + 2 * cs) {
@@ -226,8 +258,6 @@
 
 	// ── Render state (synced from physics each frame) ──────────────────
 	let renderPts = $state<Array<{ x: number; y: number }>>([]);
-	let sqEst = $state(0);
-	let dynamicStretch = $state(0);
 
 	// ── SVG derived ────────────────────────────────────────────────────
 	// Smooth closed Catmull-Rom spline through particle positions
@@ -585,11 +615,9 @@
 
 	// ── Respawn on geometry prop changes ──────────────────────────────
 	$effect(() => {
-		// Track geometry props only — not sliders
-		cs;
-		glandDepth;
-		grooveWidth;
-		clearance;
+		// Track geometry props only — not sliders. The read registers them as
+		// reactive dependencies; the value itself is unused.
+		const _geom = [cs, glandDepth, grooveWidth, clearance];
 		// Respawn ring; untrack prevents slider reads inside from becoming dependencies
 		if (particles.length > 0) untrack(() => spawnRing(posX));
 	});
@@ -1044,7 +1072,7 @@
 
 <div class="flex flex-col gap-5 lg:flex-row lg:items-start">
 	<!-- SVG Canvas -->
-	<div class="shrink-0 overflow-hidden rounded-lg border border-border lg:w-[560px]">
+	<div class="shrink-0 overflow-hidden rounded-lg border border-border lg:w-140">
 		<svg
 			viewBox="0 0 {viewW} {viewH}"
 			width="100%"
@@ -1103,74 +1131,16 @@
 			{#if sealType === 'face'}
 				<!-- ═══ FACE SEAL LAYOUT: housing+groove at top, flat plate at bottom (moves vertically) ═══ -->
 
-				<!-- Groove clearout -->
-				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
-						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
-					class="canvas-bg"
-					stroke="none"
-				/>
+				<!-- Groove clearout (erases grid behind groove space) -->
+				<path d={grooveD} class="canvas-bg" stroke="none" />
 
-				<!-- O-ring body -->
-				{#if oPath}
-					<path
-						d={oPath}
-						class="oring-body"
-						style="stroke: {sqEst > 0.25 ? 'var(--destructive)' : 'var(--muted-foreground)'}"
-					/>
-				{/if}
+				{@render oringBody()}
 
 				<!-- Housing body with groove (stationary, at top) -->
-				<rect
-					x={0}
-					y={0}
-					width={Math.max(0, gL)}
-					height={boreIdSvgY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<rect
-					x={gR}
-					y={0}
-					width={Math.max(0, viewW - gR)}
-					height={boreIdSvgY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<rect
-					x={gL}
-					y={0}
-					width={gR - gL}
-					height={boreWallY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<!-- Groove corner fillets (bottom, convex — metal fill) -->
-				<path
-					d="M {gL} {boreWallY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} Z"
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<path
-					d="M {gR} {boreWallY} L {gR} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 0 {gR -
-						grRpx} {boreWallY} Z"
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<!-- Housing face lines (around groove opening) -->
-				<line x1={0} y1={boreIdSvgY} x2={gL - tRpx} y2={boreIdSvgY} class="surface-edge" />
-				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
-				<!-- Groove outline -->
-				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
-						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
-					class="groove-outline"
-				/>
+				{@render housingBody()}
+				{@render grooveCornerFillets()}
+				{@render housingSurfaceLines()}
+				<path d={grooveD} class="groove-outline" />
 
 				<!-- Flat plate (moving, at bottom) -->
 				<rect
@@ -1200,190 +1170,28 @@
 				<!-- ═══ ROD SEAL LAYOUT: housing+groove at top, rod+chamfer at bottom ═══ -->
 
 				<!-- Groove clearout (erases grid behind groove space) -->
-				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
-						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
-					class="canvas-bg"
-					stroke="none"
-				/>
+				<path d={grooveD} class="canvas-bg" stroke="none" />
 
-				<!-- O-ring body -->
-				{#if oPath}
-					<path
-						d={oPath}
-						class="oring-body"
-						style="stroke: {sqEst > 0.25 ? 'var(--destructive)' : 'var(--muted-foreground)'}"
-					/>
-				{/if}
+				{@render oringBody()}
 
 				<!-- Housing body with groove (stationary, at top) -->
-				<rect
-					x={0}
-					y={0}
-					width={Math.max(0, gL)}
-					height={boreIdSvgY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<rect
-					x={gR}
-					y={0}
-					width={Math.max(0, viewW - gR)}
-					height={boreIdSvgY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<rect
-					x={gL}
-					y={0}
-					width={gR - gL}
-					height={boreWallY}
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<!-- Groove corner fillets (bottom, convex — metal fill at radii) -->
-				<path
-					d="M {gL} {boreWallY} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} Z"
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<path
-					d="M {gR} {boreWallY} L {gR} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 0 {gR -
-						grRpx} {boreWallY} Z"
-					fill="url(#{topHatch})"
-					stroke="none"
-				/>
-				<!-- Bore ID surface lines -->
-				<line x1={0} y1={boreIdSvgY} x2={gL - tRpx} y2={boreIdSvgY} class="surface-edge" />
-				<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
-				<!-- Groove outline -->
-				<path
-					d="M {gL - tRpx} {boreIdSvgY} A {tRpx} {tRpx} 0 0 0 {gL} {boreIdSvgY -
-						tRpx} L {gL} {boreWallY + grRpx} A {grRpx} {grRpx} 0 0 1 {gL +
-						grRpx} {boreWallY} L {gR - grRpx} {boreWallY} A {grRpx} {grRpx} 0 0 1 {gR} {boreWallY +
-						grRpx} L {gR} {boreIdSvgY - tRpx} A {tRpx} {tRpx} 0 0 0 {gR + tRpx} {boreIdSvgY}"
-					class="groove-outline"
-				/>
+				{@render housingBody()}
+				{@render grooveCornerFillets()}
+				{@render housingSurfaceLines()}
+				<path d={grooveD} class="groove-outline" />
 
 				<!-- Rod body with chamfer (moving, at bottom) -->
-				{#if chFillet}
-					<path
-						d="M 0 {viewH} L 0 {grooveBottomY} L {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 1 {chFillet.chamX} {chFillet.chamY} L {chX1} {grooveBottomY +
-							chRpx} L {chX1} {viewH} Z"
-						fill="url(#{bottomHatch})"
-						stroke="none"
-					/>
-					<line
-						x1={0}
-						y1={grooveBottomY}
-						x2={chFillet.boreX}
-						y2={chFillet.boreY}
-						class="surface-edge"
-					/>
-					<path
-						d="M {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 1 {chFillet.chamX} {chFillet.chamY}"
-						class="surface-edge"
-						fill="none"
-					/>
-					<line
-						x1={chFillet.chamX}
-						y1={chFillet.chamY}
-						x2={chX1}
-						y2={grooveBottomY + chRpx}
-						class="chamfer-edge"
-					/>
-				{:else}
-					<path
-						d="M 0 {viewH} L 0 {grooveBottomY} L {chX0} {grooveBottomY} L {chX1} {grooveBottomY +
-							chRpx} L {chX1} {viewH} Z"
-						fill="url(#{bottomHatch})"
-						stroke="none"
-					/>
-					<line x1={0} y1={grooveBottomY} x2={chX0} y2={grooveBottomY} class="surface-edge" />
-					<line
-						x1={chX0}
-						y1={grooveBottomY}
-						x2={chX1}
-						y2={grooveBottomY + chRpx}
-						class="chamfer-edge"
-					/>
-				{/if}
-				<line x1={chX1} y1={grooveBottomY + chRpx} x2={chX1} y2={viewH} class="surface-edge" />
-				<text
-					x={chFillet ? (chFillet.chamX + chX1) / 2 + 5 : (chX0 + chX1) / 2 + 5}
-					y={grooveBottomY + chRpx / 2 + 14}
-					class="chamfer-label"
-					text-anchor="middle">{chamferAngle}°</text
-				>
+				{@render movingChamferPart(grooveBottomY, viewH)}
 			{:else}
 				<!-- ═══ PISTON SEAL LAYOUT: bore+chamfer at top, piston+groove at bottom ═══ -->
 
-				<!-- Groove clearout (erases grid behind open bore/groove space) -->
-				<path
-					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY +
-						tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
-						grRpx} {grooveBottomY} L {gR -
-						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
-						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
-					class="canvas-bg"
-					stroke="none"
-				/>
+				<!-- Groove clearout (erases grid behind groove space) -->
+				<path d={grooveD} class="canvas-bg" stroke="none" />
 
-				<!-- O-ring body -->
-				{#if oPath}
-					<path
-						d={oPath}
-						class="oring-body"
-						style="stroke: {sqEst > 0.25 ? 'var(--destructive)' : 'var(--muted-foreground)'}"
-					/>
-				{/if}
+				{@render oringBody()}
 
 				<!-- Bore wall + chamfer (moving, at top) -->
-				{#if chFillet}
-					<path
-						d="M 0 0 L 0 {boreWallY} L {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 0 {chFillet.chamX} {chFillet.chamY} L {chX1} {boreWallY -
-							chRpx} L {chX1} 0 Z"
-						fill="url(#{topHatch})"
-						stroke="none"
-					/>
-					<line
-						x1={0}
-						y1={boreWallY}
-						x2={chFillet.boreX}
-						y2={chFillet.boreY}
-						class="surface-edge"
-					/>
-					<path
-						d="M {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 0 {chFillet.chamX} {chFillet.chamY}"
-						class="surface-edge"
-						fill="none"
-					/>
-					<line
-						x1={chFillet.chamX}
-						y1={chFillet.chamY}
-						x2={chX1}
-						y2={boreWallY - chRpx}
-						class="chamfer-edge"
-					/>
-				{:else}
-					<path
-						d="M 0 0 L 0 {boreWallY} L {chX0} {boreWallY} L {chX1} {boreWallY - chRpx} L {chX1} 0 Z"
-						fill="url(#{topHatch})"
-						stroke="none"
-					/>
-					<line x1={0} y1={boreWallY} x2={chX0} y2={boreWallY} class="surface-edge" />
-					<line x1={chX0} y1={boreWallY} x2={chX1} y2={boreWallY - chRpx} class="chamfer-edge" />
-				{/if}
-				<line x1={chX1} y1={boreWallY - chRpx} x2={chX1} y2={0} class="surface-edge" />
-				<text
-					x={chFillet ? (chFillet.chamX + chX1) / 2 + 5 : (chX0 + chX1) / 2 + 5}
-					y={boreWallY - chRpx / 2 - 7}
-					class="chamfer-label"
-					text-anchor="middle">{chamferAngle}°</text
-				>
+				{@render movingChamferPart(boreWallY, 0)}
 
 				<!-- Piston body with groove (stationary, at bottom) -->
 				{@const stepX = gR + (viewW - gR) * 0.7}
@@ -1391,10 +1199,10 @@
 				{@const shaftY = rodOdY + stepH}
 				{@const filletR = Math.min(stepH * 0.4, 20)}
 				{@const endFaceX = gL * 0.15}
-				{@const endChamLen = (viewH - rodOdY) * 0.35}
-				<!-- Left side: piston end face with chamfer -->
+				{@const endChamLen = (viewH - rodOdY) * 0.5}
+				<!-- Left side: piston end face with rounded corner -->
 				<path
-					d="M {endFaceX} {rodOdY + endChamLen} L {endFaceX +
+					d="M {endFaceX} {rodOdY + endChamLen} A {endChamLen} {endChamLen} 0 0 1 {endFaceX +
 						endChamLen} {rodOdY} L {gL} {rodOdY} L {gL} {viewH} L {endFaceX} {viewH} Z"
 					fill="url(#{bottomHatch})"
 					stroke="none"
@@ -1402,7 +1210,7 @@
 				{@const sCham = filletR * 1.0}
 				<!-- Right side: stepped piston (head → chamfer → shoulder → shaft) -->
 				<path
-					d="M {gR} {rodOdY} L {stepX - sCham} {rodOdY} L {stepX} {rodOdY +
+					d="M {gR} {rodOdY} L {stepX - sCham} {rodOdY} A {sCham} {sCham} 0 0 1 {stepX} {rodOdY +
 						sCham} L {stepX} {shaftY - filletR} A {filletR} {filletR} 0 0 0 {stepX +
 						filletR} {shaftY} L {viewW} {shaftY} L {viewW} {viewH} L {gR} {viewH} Z"
 					fill="url(#{bottomHatch})"
@@ -1425,13 +1233,12 @@
 					y2={viewH}
 					class="surface-edge"
 				/>
-				<!-- Chamfer -->
-				<line
-					x1={endFaceX}
-					y1={rodOdY + endChamLen}
-					x2={endFaceX + endChamLen}
-					y2={rodOdY}
+				<!-- Corner fillet -->
+				<path
+					d="M {endFaceX} {rodOdY + endChamLen} A {endChamLen} {endChamLen} 0 0 1 {endFaceX +
+						endChamLen} {rodOdY}"
 					class="surface-edge"
+					fill="none"
 				/>
 				<!-- Piston head OD surface -->
 				<line
@@ -1442,8 +1249,12 @@
 					class="surface-edge"
 				/>
 				<line x1={gR + tRpx} y1={rodOdY} x2={stepX - sCham} y2={rodOdY} class="surface-edge" />
-				<!-- Shoulder chamfer -->
-				<line x1={stepX - sCham} y1={rodOdY} x2={stepX} y2={rodOdY + sCham} class="surface-edge" />
+				<!-- Shoulder corner fillet -->
+				<path
+					d="M {stepX - sCham} {rodOdY} A {sCham} {sCham} 0 0 1 {stepX} {rodOdY + sCham}"
+					class="surface-edge"
+					fill="none"
+				/>
 				<!-- Shoulder face -->
 				<line
 					x1={stepX}
@@ -1460,27 +1271,9 @@
 				/>
 				<!-- Shaft surface -->
 				<line x1={stepX + filletR} y1={shaftY} x2={viewW} y2={shaftY} class="surface-edge" />
-				<!-- Groove corner fillets (bottom, convex — metal fill at radii) -->
-				<path
-					d="M {gL} {grooveBottomY} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
-						grRpx} {grooveBottomY} Z"
-					fill="url(#{bottomHatch})"
-					stroke="none"
-				/>
-				<path
-					d="M {gR} {grooveBottomY} L {gR} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 1 {gR -
-						grRpx} {grooveBottomY} Z"
-					fill="url(#{bottomHatch})"
-					stroke="none"
-				/>
-				<path
-					d="M {gL - tRpx} {rodOdY} A {tRpx} {tRpx} 0 0 1 {gL} {rodOdY +
-						tRpx} L {gL} {grooveBottomY - grRpx} A {grRpx} {grRpx} 0 0 0 {gL +
-						grRpx} {grooveBottomY} L {gR -
-						grRpx} {grooveBottomY} A {grRpx} {grRpx} 0 0 0 {gR} {grooveBottomY -
-						grRpx} L {gR} {rodOdY + tRpx} A {tRpx} {tRpx} 0 0 1 {gR + tRpx} {rodOdY}"
-					class="groove-outline"
-				/>
+				<!-- Groove corner fillets (convex metal fill) + outline -->
+				{@render grooveCornerFillets()}
+				<path d={grooveD} class="groove-outline" />
 			{/if}
 
 			<!-- Debug overlay -->
@@ -1718,6 +1511,97 @@
 	</div>
 </div>
 
+{#snippet oringBody()}
+	{#if oPath}
+		<path
+			d={oPath}
+			class="oring-body"
+			style="stroke: {sqEst > 0.25 ? 'var(--destructive)' : 'var(--muted-foreground)'}"
+		/>
+	{/if}
+{/snippet}
+
+<!-- Convex metal fill at the two groove-floor corners (radius grRpx) -->
+{#snippet grooveCornerFillets()}
+	{@const F = grooveFloorY}
+	{@const id = Math.sign(grooveOpeningY - F)}
+	{@const sweep = id > 0 ? 1 : 0}
+	<path
+		d="M {gL} {F} L {gL} {F + id * grRpx} A {grRpx} {grRpx} 0 0 {sweep} {gL + grRpx} {F} Z"
+		fill="url(#{grooveHatch})"
+		stroke="none"
+	/>
+	<path
+		d="M {gR} {F} L {gR} {F + id * grRpx} A {grRpx} {grRpx} 0 0 {1 - sweep} {gR - grRpx} {F} Z"
+		fill="url(#{grooveHatch})"
+		stroke="none"
+	/>
+{/snippet}
+
+<!-- Housing top half (face/rod): three metal rects + bore-ID surface lines -->
+{#snippet housingBody()}
+	<rect
+		x={0}
+		y={0}
+		width={Math.max(0, gL)}
+		height={boreIdSvgY}
+		fill="url(#{topHatch})"
+		stroke="none"
+	/>
+	<rect
+		x={gR}
+		y={0}
+		width={Math.max(0, viewW - gR)}
+		height={boreIdSvgY}
+		fill="url(#{topHatch})"
+		stroke="none"
+	/>
+	<rect x={gL} y={0} width={gR - gL} height={boreWallY} fill="url(#{topHatch})" stroke="none" />
+{/snippet}
+
+{#snippet housingSurfaceLines()}
+	<line x1={0} y1={boreIdSvgY} x2={gL - tRpx} y2={boreIdSvgY} class="surface-edge" />
+	<line x1={gR + tRpx} y1={boreIdSvgY} x2={viewW} y2={boreIdSvgY} class="surface-edge" />
+{/snippet}
+
+<!-- Moving rod/piston body with lead-in chamfer (or fillet when chamferBoreRadius > 0).
+     surfY = the surface the groove faces; farY = body's far edge (off-screen side). -->
+{#snippet movingChamferPart(surfY: number, farY: number)}
+	{@const dir = Math.sign(farY - surfY)}
+	{@const sweep = dir > 0 ? 1 : 0}
+	{@const chTipY = surfY + dir * chRpx}
+	{@const hatch = sealType === 'piston' ? topHatch : bottomHatch}
+	{#if chFillet}
+		<path
+			d="M 0 {farY} L 0 {surfY} L {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 {sweep} {chFillet.chamX} {chFillet.chamY} L {chX1} {chTipY} L {chX1} {farY} Z"
+			fill="url(#{hatch})"
+			stroke="none"
+		/>
+		<line x1={0} y1={surfY} x2={chFillet.boreX} y2={chFillet.boreY} class="surface-edge" />
+		<path
+			d="M {chFillet.boreX} {chFillet.boreY} A {chFillet.r} {chFillet.r} 0 0 {sweep} {chFillet.chamX} {chFillet.chamY}"
+			class="surface-edge"
+			fill="none"
+		/>
+		<line x1={chFillet.chamX} y1={chFillet.chamY} x2={chX1} y2={chTipY} class="chamfer-edge" />
+	{:else}
+		<path
+			d="M 0 {farY} L 0 {surfY} L {chX0} {surfY} L {chX1} {chTipY} L {chX1} {farY} Z"
+			fill="url(#{hatch})"
+			stroke="none"
+		/>
+		<line x1={0} y1={surfY} x2={chX0} y2={surfY} class="surface-edge" />
+		<line x1={chX0} y1={surfY} x2={chX1} y2={chTipY} class="chamfer-edge" />
+	{/if}
+	<line x1={chX1} y1={chTipY} x2={chX1} y2={farY} class="surface-edge" />
+	<text
+		x={chFillet ? (chFillet.chamX + chX1) / 2 + 5 : (chX0 + chX1) / 2 + 5}
+		y={surfY + (dir * chRpx) / 2 + (dir > 0 ? 14 : -7)}
+		class="chamfer-label"
+		text-anchor="middle">{chamferAngle}°</text
+	>
+{/snippet}
+
 {#snippet sliderRow(
 	label: string,
 	val: number,
@@ -1816,7 +1700,7 @@
 		font-size: 10px;
 		opacity: 0.35;
 	}
-.debug-dot {
+	.debug-dot {
 		fill: var(--chart-1);
 		opacity: 0.6;
 	}

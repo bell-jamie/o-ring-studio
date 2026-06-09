@@ -49,15 +49,19 @@
 	const worstStatus = $derived(getWorst(minStatus, nomStatus, maxStatus));
 
 	// Second result statuses (when eccentric)
-	const minStatus2 = $derived(secondResult ? getStatus(secondResult.min, criteria) : 'ok' as Status);
-	const nomStatus2 = $derived(secondResult ? getStatus(secondResult.nominal, criteria) : 'ok' as Status);
-	const maxStatus2 = $derived(secondResult ? getStatus(secondResult.max, criteria) : 'ok' as Status);
+	const minStatus2 = $derived(
+		secondResult ? getStatus(secondResult.min, criteria) : ('ok' as Status)
+	);
+	const nomStatus2 = $derived(
+		secondResult ? getStatus(secondResult.nominal, criteria) : ('ok' as Status)
+	);
+	const maxStatus2 = $derived(
+		secondResult ? getStatus(secondResult.max, criteria) : ('ok' as Status)
+	);
 	const worstStatus2 = $derived(getWorst(minStatus2, nomStatus2, maxStatus2));
 
 	// Overall card status includes both results
 	const cardStatus = $derived(secondResult ? getWorst(worstStatus, worstStatus2) : worstStatus);
-
-	const OverallIcon = $derived(statusIcon[cardStatus]);
 
 	// Gauge bar positioning — shared range across both results so bars are comparable
 	const allVals = $derived(
@@ -76,7 +80,13 @@
 	}
 </script>
 
-{#snippet values(r: RangeResult, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+{#snippet values(
+	r: RangeResult,
+	mnStat: Status,
+	nmStat: Status,
+	mxStat: Status,
+	sideLabel?: string
+)}
 	{@const MnIcon = statusIcon[mnStat]}
 	{@const MxIcon = statusIcon[mxStat]}
 	<div class="flex items-baseline justify-between px-1">
@@ -86,9 +96,16 @@
 		</div>
 		<div class="flex items-baseline gap-1.5">
 			{#if sideLabel}
-				<span class="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-foreground/50">{sideLabel}</span>
+				<span
+					class="rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-foreground/50"
+					>{sideLabel}</span
+				>
 			{/if}
-			<span class="font-mono {sideLabel ? 'text-base' : 'text-2xl'} font-bold tracking-tight {statusColor[nmStat]}">
+			<span
+				class="font-mono {sideLabel
+					? 'text-base'
+					: 'text-2xl'} font-bold tracking-tight {statusColor[nmStat]}"
+			>
 				{fmt(r.nominal)}
 			</span>
 			<span class="{sideLabel ? 'text-[10px]' : 'text-sm'} text-foreground/50">{unit}</span>
@@ -124,20 +141,36 @@
 		></div>
 		<!-- Nominal dot -->
 		<div
-			class="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background {statusDot[nmStat]}"
+			class="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-background {statusDot[
+				nmStat
+			]}"
 			style="left: {pct(r.nominal)}%"
 		></div>
 	</div>
 {/snippet}
 
-{#snippet gauge(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+{#snippet gauge(
+	r: RangeResult,
+	wStat: Status,
+	mnStat: Status,
+	nmStat: Status,
+	mxStat: Status,
+	sideLabel?: string
+)}
 	<div class="mt-1.5 space-y-1.5">
 		{@render values(r, mnStat, nmStat, mxStat, sideLabel)}
 		{@render bar(r, wStat, mnStat, mxStat, nmStat)}
 	</div>
 {/snippet}
 
-{#snippet gaugeFlipped(r: RangeResult, wStat: Status, mnStat: Status, nmStat: Status, mxStat: Status, sideLabel?: string)}
+{#snippet gaugeFlipped(
+	r: RangeResult,
+	wStat: Status,
+	mnStat: Status,
+	nmStat: Status,
+	mxStat: Status,
+	sideLabel?: string
+)}
 	<div class="mt-1.5 space-y-1.5">
 		{@render bar(r, wStat, mnStat, mxStat, nmStat)}
 		{@render values(r, mnStat, nmStat, mxStat, sideLabel)}
@@ -155,7 +188,14 @@
 
 	{#if secondResult}
 		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus, 'loaded')}
-		{@render gaugeFlipped(secondResult, worstStatus2, minStatus2, nomStatus2, maxStatus2, 'unloaded')}
+		{@render gaugeFlipped(
+			secondResult,
+			worstStatus2,
+			minStatus2,
+			nomStatus2,
+			maxStatus2,
+			'unloaded'
+		)}
 	{:else}
 		{@render gauge(result, worstStatus, minStatus, nomStatus, maxStatus)}
 	{/if}

@@ -7,3 +7,6 @@ bun.lockb
 
 # Miscellaneous
 /static/
+
+# Generated wasm-bindgen output
+/packages/iso-286/pkg/

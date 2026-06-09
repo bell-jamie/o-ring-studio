@@ -568,7 +568,7 @@ export function lookupCSTolerance(
 ): { upper: number; lower: number } | null {
 	if (cls === 'Aero') return findBand(nominal, CS_TOL_AERO);
 	const std = isStandardCS(nominal);
-	const table = cls === 'A' ? (std ? CS_TOL_A : CS_TOL_NSTDA) : (std ? CS_TOL_B : CS_TOL_NSTDB);
+	const table = cls === 'A' ? (std ? CS_TOL_A : CS_TOL_NSTDA) : std ? CS_TOL_B : CS_TOL_NSTDB;
 	return findBand(nominal, table);
 }
 
@@ -604,10 +604,10 @@ function getClassAIDTable(cs?: number): ToleranceBand[] | null {
 
 function getAeroIDTable(cs?: number): ToleranceBand[] | null {
 	if (cs == null) return null;
-	if (cs <= 1.80) return ID_TOL_AERO_180;
+	if (cs <= 1.8) return ID_TOL_AERO_180;
 	if (cs <= 2.65) return ID_TOL_AERO_265;
 	if (cs <= 3.55) return ID_TOL_AERO_355;
-	if (cs <= 5.30) return ID_TOL_AERO_530;
-	if (cs <= 7.00) return ID_TOL_AERO_700;
+	if (cs <= 5.3) return ID_TOL_AERO_530;
+	if (cs <= 7.0) return ID_TOL_AERO_700;
 	return null;
 }

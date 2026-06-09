@@ -58,10 +58,7 @@ export function calcInstalledHeight(
  * Min stretch: min groove dia, max o-ring ID
  * Max stretch: max groove dia, min o-ring ID
  */
-export function calcStretch(
-	grooveDia: ResolvedDimension,
-	oRingID: ResolvedDimension
-): RangeResult {
+export function calcStretch(grooveDia: ResolvedDimension, oRingID: ResolvedDimension): RangeResult {
 	return {
 		nominal: ((grooveDia.nominal - oRingID.nominal) / oRingID.nominal) * 100,
 		min: ((grooveDia.min - oRingID.max) / oRingID.max) * 100,
@@ -122,21 +119,27 @@ export function calcFill(
 	grooveRadii: ResolvedDimension
 ): RangeResult {
 	const oRingArea = (csVal: number) => Math.PI * (csVal / 2) ** 2;
-	const grooveArea = (w: number, d: number, r: number) =>
-		w * d - 2 * r * r * (1 - Math.PI / 4);
+	const grooveArea = (w: number, d: number, r: number) => w * d - 2 * r * r * (1 - Math.PI / 4);
 
 	return {
-		nominal: (oRingArea(stretchedCS.nominal) /
-			grooveArea(grooveWidth.nominal, grooveDepth.nominal, grooveRadii.nominal)) * 100,
-		min: (oRingArea(stretchedCS.min) /
-			grooveArea(grooveWidth.max, grooveDepth.max, grooveRadii.max)) * 100,
-		max: (oRingArea(stretchedCS.max) /
-			grooveArea(grooveWidth.min, grooveDepth.min, grooveRadii.min)) * 100
+		nominal:
+			(oRingArea(stretchedCS.nominal) /
+				grooveArea(grooveWidth.nominal, grooveDepth.nominal, grooveRadii.nominal)) *
+			100,
+		min:
+			(oRingArea(stretchedCS.min) / grooveArea(grooveWidth.max, grooveDepth.max, grooveRadii.max)) *
+			100,
+		max:
+			(oRingArea(stretchedCS.max) / grooveArea(grooveWidth.min, grooveDepth.min, grooveRadii.min)) *
+			100
 	};
 }
 
 /** Master function: all inputs → all results */
-export function calculateAll(inputs: PistonSealInputs, sealType: SealType = 'piston'): PistonSealResults {
+export function calculateAll(
+	inputs: PistonSealInputs,
+	sealType: SealType = 'piston'
+): PistonSealResults {
 	const boreDia = resolve(inputs.boreDia);
 	const pistonDia = resolve(inputs.pistonDia); // rodDia for rod seal
 	const grooveDia = resolve(inputs.grooveDia);
@@ -147,12 +150,14 @@ export function calculateAll(inputs: PistonSealInputs, sealType: SealType = 'pis
 
 	// Piston seal: groove on piston → depth = (piston - groove) / 2, IH = (bore - groove) / 2
 	// Rod seal: groove in housing → depth = (groove - bore) / 2, IH = (groove - rod) / 2
-	const grooveDepth = sealType === 'piston'
-		? calcGrooveDepth(pistonDia, grooveDia)
-		: calcGrooveDepth(grooveDia, boreDia);
-	const installedHeight = sealType === 'piston'
-		? calcInstalledHeight(boreDia, grooveDia)
-		: calcInstalledHeight(grooveDia, pistonDia);
+	const grooveDepth =
+		sealType === 'piston'
+			? calcGrooveDepth(pistonDia, grooveDia)
+			: calcGrooveDepth(grooveDia, boreDia);
+	const installedHeight =
+		sealType === 'piston'
+			? calcInstalledHeight(boreDia, grooveDia)
+			: calcInstalledHeight(grooveDia, pistonDia);
 
 	const stretch = calcStretch(grooveDia, id);
 	const stretchedCS = calcStretchedCS(cs, id, grooveDia);
@@ -192,7 +197,11 @@ export function calculateFaceSeal(inputs: FaceSealInputs): FaceSealResults {
 	const csRange: RangeResult = { nominal: cs.nominal, min: cs.min, max: cs.max };
 
 	// Axial compression: housing height is the installed height
-	const ihRange: RangeResult = { nominal: housingHeight.nominal, min: housingHeight.min, max: housingHeight.max };
+	const ihRange: RangeResult = {
+		nominal: housingHeight.nominal,
+		min: housingHeight.min,
+		max: housingHeight.max
+	};
 	const compression = calcCompression(ihRange, csRange);
 
 	// Fill: o-ring area / groove cross-section area
@@ -231,8 +240,6 @@ export function applyEccentricity(
 ): { tight: PistonSealResults; loose: PistonSealResults } {
 	if (eccentricity <= 0) return { tight: base, loose: base };
 
-	const bore = resolve(inputs.boreDia);
-	const piston = resolve(inputs.pistonDia);
 	const grooveWidth = resolve(inputs.grooveWidth);
 	const grooveRadii = resolve(inputs.grooveRadii);
 
@@ -437,7 +444,14 @@ export function generateFaceSealFromGrooveID(
 		}
 	}
 
-	return generateFaceSealFromORing(cs, best.id, targetStretch, targetCompression, targetFill, grooveRadii);
+	return generateFaceSealFromORing(
+		cs,
+		best.id,
+		targetStretch,
+		targetCompression,
+		targetFill,
+		grooveRadii
+	);
 }
 
 /** Round to the nearest "nice" machining number based on magnitude */

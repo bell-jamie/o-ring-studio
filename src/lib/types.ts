@@ -71,4 +71,3 @@ export interface AcceptanceCriteria {
 	min: number;
 	max: number;
 }
-

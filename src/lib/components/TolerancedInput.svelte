@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { FitType } from '$lib/iso286';
 	import { lookupIso286, validateClass } from '$lib/iso286';
 
@@ -39,7 +40,7 @@
 
 	// Reset to empty when the default changes (e.g. seal type toggle) — the fit
 	// type may flip hole<->shaft, which would invalidate any class already typed.
-	let prevDefault = defaultFitClass;
+	let prevDefault = untrack(() => defaultFitClass);
 	$effect(() => {
 		if (defaultFitClass !== prevDefault) {
 			fitClass = '';
@@ -107,7 +108,8 @@
 						type="button"
 						onclick={() => (fitClass = defaultFitClass)}
 						title="Apply recommended ISO 286 fit ({defaultFitClass})"
-						class="rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium transition-colors {fitClass === defaultFitClass
+						class="rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium transition-colors {fitClass ===
+						defaultFitClass
 							? 'border-transparent bg-primary/10 text-primary'
 							: 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
 					>
