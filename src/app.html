@@ -4,6 +4,21 @@
 		<title>O-Ring Studio</title>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script>
+			// applied synchronously, before first paint, so the page never flashes
+			// the wrong theme before switching to the saved/system preference —
+			// keep this in sync with +page.svelte's initTheme/applyTheme
+			(function () {
+				try {
+					var stored = localStorage.getItem('theme');
+					var dark =
+						stored === 'dark' ||
+						(!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+					document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+					document.documentElement.classList.toggle('dark', dark);
+				} catch (e) {}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

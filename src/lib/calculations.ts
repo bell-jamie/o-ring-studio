@@ -11,11 +11,16 @@ import type {
 	AcceptanceCriteria
 } from './types';
 
-/** Resolve a toleranced dimension into min/nominal/max */
+/**
+ * Resolve a toleranced dimension into min/middle/max. `nominal` reports the
+ * middle-limit size (basic size + mean deviation, per the iso-286 `middle`
+ * value), not the raw basic size, since that's the size the part is expected
+ * to land on in practice.
+ */
 export function resolve(d: TolerancedDimension): ResolvedDimension {
 	return {
 		min: d.nominal + d.lowerTol,
-		nominal: d.nominal,
+		nominal: d.nominal + (d.lowerTol + d.upperTol) / 2,
 		max: d.nominal + d.upperTol
 	};
 }
@@ -162,7 +167,9 @@ export function calculateAll(
 	const stretch = calcStretch(grooveDia, id);
 	const stretchedCS = calcStretchedCS(cs, id, grooveDia);
 	const compression = calcCompression(installedHeight, stretchedCS);
-	const fill = calcFill(stretchedCS, grooveWidth, grooveDepth, grooveRadii);
+	// Fill uses installedHeight, not grooveDepth: the sealed cavity is bounded
+	// radially by the mating bore/rod, not just the machined groove pocket.
+	const fill = calcFill(stretchedCS, grooveWidth, installedHeight, grooveRadii);
 	const extrusionGap = calcExtrusionGap(boreDia, pistonDia);
 
 	return { stretch, compression, fill, extrusionGap, installedHeight, grooveDepth, stretchedCS };
@@ -273,7 +280,8 @@ export function applyEccentricity(
 			min: base.grooveDepth.min,
 			max: base.grooveDepth.max
 		};
-		const fill = calcFill(base.stretchedCS, grooveWidth, grooveDepth, grooveRadii);
+		// Fill uses the offset-adjusted installed height, so it responds to eccentricity
+		const fill = calcFill(base.stretchedCS, grooveWidth, ih, grooveRadii);
 
 		// Extrusion gap: base gap + offset (tight side shrinks, loose side grows)
 		const extrusionGap: RangeResult = {

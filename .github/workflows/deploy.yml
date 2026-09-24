@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -19,6 +19,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Bump version
+        if: github.event_name == 'push'
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if echo "$COMMIT_MSG" | grep -q '\[major\]'; then
+            BUMP=major
+          elif echo "$COMMIT_MSG" | grep -q '\[minor\]'; then
+            BUMP=minor
+          else
+            BUMP=patch
+          fi
+          npm version "$BUMP" --no-git-tag-version
+          git commit -am "chore: bump version ($BUMP) [skip ci]"
+          git push
       - uses: pnpm/action-setup@v4
         with:
           version: 10
