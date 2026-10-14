@@ -1,5 +1,12 @@
 <script lang="ts">
-	import type { PistonSealInputs, FaceSealInputs, AcceptanceCriteria, SealType } from '$lib/types';
+	import type {
+		PistonSealInputs,
+		FaceSealInputs,
+		AcceptanceCriteria,
+		SealType,
+		Application,
+		OringMaterial
+	} from '$lib/types';
 	import {
 		calculateAll,
 		calculateFaceSeal,
@@ -8,7 +15,10 @@
 		generateFaceSealFromORing,
 		generateFaceSealFromGrooveID,
 		applyEccentricity,
-		resolve
+		resolve,
+		getStretchCriteria,
+		getTargetStretch,
+		getOdCompressionCriteria
 	} from '$lib/calculations';
 	import { lookupCSTolerance, lookupIDTolerance, type OringClass } from '$lib/iso3601-tol';
 	import { PersistedState } from 'runed';
@@ -19,12 +29,21 @@
 
 	// Seal type toggle
 	const sealType = new PersistedState<SealType>('oringSealType', 'piston');
+	// Application + compound set the stretch limits (and the generators' target stretch)
+	const application = new PersistedState<Application>('oringApplication', 'static');
+	const material = new PersistedState<OringMaterial>('oringMaterial', 'NBR');
+	const MATERIAL_OPTIONS: OringMaterial[] = ['NBR', 'HNBR', 'FKM', 'EPDM', 'VMQ', 'FFKM'];
+	const targetStretch = $derived(getTargetStretch(application.current, material.current));
 
 	/** Get standard o-ring sizes for a given CS value and the current size class */
 	function getSizesForCS(cs: number): { id: number }[] {
 		// Determine which ISO table keys to search based on sizeClass
 		const keys: SizeClass[] =
-			sizeClass.current === 'A' ? ['A'] : sizeClass.current === 'Aero' ? ['Aero'] : ['B-in', 'B-mm'];
+			sizeClass.current === 'A'
+				? ['A']
+				: sizeClass.current === 'Aero'
+					? ['Aero']
+					: ['B-in', 'B-mm'];
 		for (const key of keys) {
 			const group = ISO3601_SIZES[key].find((g) => Math.abs(g.cs - cs) < 0.001);
 			if (group) return group.sizes;
@@ -59,7 +78,7 @@
 			const cs = parseFloat(inputs.oRingCS.nominal);
 			if (!isNaN(bore) && bore > 0 && !isNaN(cs) && cs > 0) {
 				const sizes = getSizesForCS(cs);
-				const result = generateFromBore(bore, cs, newType, sizes);
+				const result = generateFromBore(bore, cs, newType, sizes, targetStretch.target);
 				if (result) {
 					// Keep bore as-is, update everything else
 					inputs.pistonDia.nominal = String(result.pistonDia);
@@ -195,7 +214,9 @@
 	const faceResults = $derived(faceParsed() ? calculateFaceSeal(faceParsed()!) : null);
 
 	// Unified results check — are there results for the active seal type?
-	const hasResults = $derived(sealType.current === 'face' ? faceResults !== null : results !== null);
+	const hasResults = $derived(
+		sealType.current === 'face' ? faceResults !== null : results !== null
+	);
 
 	// Standard size — A/B/Aero toggle
 	const sizeClass = new PersistedState<'A' | 'B' | 'Aero'>('oringSizeClass', 'A');
@@ -279,7 +300,16 @@
 		const cs = parseFloat(inputs.oRingCS.nominal);
 		const id = parseFloat(inputs.oRingID.nominal);
 		if (isNaN(cs) || isNaN(id)) return;
-		const h = generateHousing(cs, id, 5, 20, 65, 0.3, sealType.current);
+		const h = generateHousing(
+			cs,
+			id,
+			targetStretch.target,
+			20,
+			65,
+			0.3,
+			sealType.current,
+			targetStretch.maxDeviation
+		);
 		inputs.grooveRadii.nominal = '0.3';
 		inputs.boreDia.nominal = String(h.boreDia);
 		inputs.pistonDia.nominal = String(h.pistonDia);
@@ -295,7 +325,7 @@
 		const cs = parseFloat(inputs.oRingCS.nominal);
 		if (isNaN(bore) || isNaN(cs)) return;
 		const sizes = getSizesForCS(cs);
-		const result = generateFromBore(bore, cs, sealType.current, sizes);
+		const result = generateFromBore(bore, cs, sealType.current, sizes, targetStretch.target);
 		if (result) applyGenerated(result);
 	}
 
@@ -405,8 +435,13 @@
 		return Math.round(0.031 * Math.pow(csVal, 0.82) * 1000) / 1000;
 	});
 
+	const stretchCriteria = $derived(
+		getStretchCriteria(sealType.current, application.current, material.current)
+	);
+	const odCompressionCriteria = $derived(
+		getOdCompressionCriteria(parseFloat(inputs.oRingID.nominal) || 0)
+	);
 	const CRITERIA: Record<string, AcceptanceCriteria> = {
-		stretch: { min: 2, max: 8 },
 		compression: { min: 10, max: 35 },
 		fill: { min: 60, max: 85 }
 	};
@@ -424,11 +459,25 @@
 		<div class="mx-auto max-w-5xl px-6 py-5 flex items-center justify-between">
 			<h1 class="text-xl font-semibold text-foreground">O-Ring Studio</h1>
 			<div class="flex items-center gap-3">
-				<button
-					onclick={clearAll}
-					class="rounded border border-input px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-					>Clear</button
-				>
+				<!-- Static/dynamic sets the stretch limits; face seals are static only.
+				     Placed first so hiding it doesn't shift the controls to its right. -->
+				{#if sealType.current !== 'face'}
+					<div class="flex rounded border border-input text-xs font-medium">
+						<button
+							onclick={() => (application.current = 'static')}
+							class="rounded-l px-3 py-1 transition-colors {application.current === 'static'
+								? 'bg-primary text-primary-foreground'
+								: 'text-muted-foreground hover:bg-muted'}">Static</button
+						>
+						<button
+							onclick={() => (application.current = 'dynamic')}
+							class="rounded-r border-l border-input px-3 py-1 transition-colors {application.current ===
+							'dynamic'
+								? 'bg-primary text-primary-foreground'
+								: 'text-muted-foreground hover:bg-muted'}">Dynamic</button
+						>
+					</div>
+				{/if}
 				<div class="flex rounded border border-input text-xs font-medium">
 					<button
 						onclick={() => setSealType('piston')}
@@ -444,11 +493,17 @@
 					>
 					<button
 						onclick={() => setSealType('face')}
-						class="rounded-r border-l border-input px-3 py-1 transition-colors {sealType.current === 'face'
+						class="rounded-r border-l border-input px-3 py-1 transition-colors {sealType.current ===
+						'face'
 							? 'bg-primary text-primary-foreground'
 							: 'text-muted-foreground hover:bg-muted'}">Face Seal</button
 					>
 				</div>
+				<button
+					onclick={clearAll}
+					class="rounded border border-input px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+					>Clear</button
+				>
 			</div>
 		</div>
 	</header>
@@ -556,7 +611,16 @@
 									>{matchedSize.dash}</span
 								>
 							{/if}
-							<div class="ml-auto flex rounded border border-input text-[10px] font-medium">
+							<select
+								bind:value={material.current}
+								aria-label="O-ring material"
+								class="ml-auto rounded border border-input bg-background px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+							>
+								{#each MATERIAL_OPTIONS as m (m)}
+									<option value={m}>{m}</option>
+								{/each}
+							</select>
+							<div class="flex rounded border border-input text-[10px] font-medium">
 								<button
 									onclick={() => (sizeClass.current = 'A')}
 									class="rounded-l px-2 py-0.5 transition-colors {sizeClass.current === 'A'
@@ -565,7 +629,8 @@
 								>
 								<button
 									onclick={() => (sizeClass.current = 'B')}
-									class="border-l border-input px-2 py-0.5 transition-colors {sizeClass.current === 'B'
+									class="border-l border-input px-2 py-0.5 transition-colors {sizeClass.current ===
+									'B'
 										? 'bg-primary text-primary-foreground'
 										: 'text-muted-foreground hover:bg-muted'}">Class B</button
 								>
@@ -810,14 +875,14 @@
 					{:else if sealType.current === 'face' && faceResults}
 						<div class="space-y-3">
 							<ResultRow
-								label="O-Ring Stretch"
-								result={faceResults.stretch}
-								criteria={FACE_CRITERIA.stretch}
-							/>
-							<ResultRow
 								label="Compression"
 								result={faceResults.compression}
 								criteria={FACE_CRITERIA.compression}
+							/>
+							<ResultRow
+								label="O-Ring Stretch"
+								result={faceResults.stretch}
+								criteria={FACE_CRITERIA.stretch}
 							/>
 							<ResultRow
 								label="Groove Fill"
@@ -853,17 +918,25 @@
 
 						<div class="space-y-3">
 							<ResultRow
-								label="O-Ring Stretch"
-								result={results.stretch}
-								criteria={CRITERIA.stretch}
-							/>
-
-							<ResultRow
 								label="Compression"
 								result={eccResults ? eccResults.tight.compression : results.compression}
 								criteria={CRITERIA.compression}
 								secondResult={eccResults?.loose.compression}
 							/>
+
+							<ResultRow
+								label="O-Ring Stretch"
+								result={results.stretch}
+								criteria={stretchCriteria}
+							/>
+
+							{#if sealType.current === 'rod'}
+								<ResultRow
+									label="OD Circumferential Compression"
+									result={results.odCompression}
+									criteria={odCompressionCriteria}
+								/>
+							{/if}
 
 							<ResultRow
 								label="Groove Fill"
@@ -970,11 +1043,21 @@
 								<dd class="font-mono text-right text-foreground">
 									{#if sealType.current === 'face'}
 										(centerline &minus; ID) / ID &times; 100
+									{:else if sealType.current === 'rod'}
+										(rodDia &minus; ID) / ID &times; 100
 									{:else}
 										(grooveDia &minus; ID) / ID &times; 100
 									{/if}
 								</dd>
 							</div>
+							{#if sealType.current === 'rod'}
+								<div class="flex justify-between gap-4">
+									<dt>OD compression %</dt>
+									<dd class="font-mono text-right text-foreground">
+										(ID + 2CS &minus; grooveDia) / (ID + 2CS) &times; 100
+									</dd>
+								</div>
+							{/if}
 							<div class="flex justify-between gap-4">
 								<dt>Compression %</dt>
 								<dd class="font-mono text-right text-foreground">
@@ -1065,6 +1148,8 @@
 						oRingId={resolve(faceParsed()!.oRingID).nominal}
 						boreDia={resolve(faceParsed()!.grooveOD).nominal}
 						sealType={sealType.current}
+						material={material.current}
+						compressionCriteria={FACE_CRITERIA.compression}
 					/>
 				{/if}
 			{:else if !results || !parsed()}
@@ -1084,6 +1169,9 @@
 					oRingId={resolve(parsed()!.oRingID).nominal}
 					boreDia={resolve(parsed()!.boreDia).nominal}
 					sealType={sealType.current}
+					material={material.current}
+					{stretchCriteria}
+					compressionCriteria={CRITERIA.compression}
 				/>
 			{/if}
 		</section>

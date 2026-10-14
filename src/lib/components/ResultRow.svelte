@@ -69,8 +69,10 @@
 			? [result.min, result.max, secondResult.min, secondResult.max]
 			: [result.min, result.max]
 	);
-	const pad = $derived((criteria.max - criteria.min) * 0.4);
-	const vizMin = $derived(Math.min(criteria.min, ...allVals) - pad);
+	// Upper-limit-only criteria (min = -Infinity): anchor the gauge at 0 or the lowest value
+	const critMin = $derived(Number.isFinite(criteria.min) ? criteria.min : Math.min(0, ...allVals));
+	const pad = $derived((criteria.max - critMin) * 0.4 || 1);
+	const vizMin = $derived(Math.min(critMin, ...allVals) - pad);
 	const vizMax = $derived(Math.max(criteria.max, ...allVals) + pad);
 	const span = $derived(vizMax - vizMin || 1);
 	const pct = (v: number) => Math.max(0, Math.min(100, ((v - vizMin) / span) * 100));
@@ -182,7 +184,18 @@
 	<div class="flex items-center justify-between">
 		<span class="text-sm font-medium text-foreground">{label}</span>
 		<span class="text-[10px] text-muted-foreground">
-			Target {criteria.min}{unit} – {criteria.max}{unit}
+			{#if Number.isFinite(criteria.min)}
+				Target {criteria.min}{unit} – {criteria.max}{unit}
+			{:else}
+				Target ≤ {criteria.max}{unit}
+			{/if}
+			{#if criteria.hardMin !== undefined || (criteria.hardMax !== undefined && criteria.hardMax !== criteria.max)}
+				<span class="text-muted-foreground/70">
+					(limit {criteria.hardMin !== undefined
+						? `${criteria.hardMin}${unit} – `
+						: '≤ '}{criteria.hardMax ?? criteria.max}{unit})
+				</span>
+			{/if}
 		</span>
 	</div>
 

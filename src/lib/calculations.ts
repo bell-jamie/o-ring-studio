@@ -8,7 +8,9 @@ import type {
 	FaceSealResults,
 	SealType,
 	Status,
-	AcceptanceCriteria
+	AcceptanceCriteria,
+	Application,
+	OringMaterial
 } from './types';
 
 /**
@@ -59,9 +61,10 @@ export function calcInstalledHeight(
 }
 
 /**
- * Stretch % = ((grooveDia - oRingID) / oRingID) × 100
- * Min stretch: min groove dia, max o-ring ID
- * Max stretch: max groove dia, min o-ring ID
+ * Stretch % = ((seatDia - oRingID) / oRingID) × 100
+ * seatDia is the diameter the o-ring ID sits on: groove dia (piston), rod dia (rod).
+ * Min stretch: min seat dia, max o-ring ID
+ * Max stretch: max seat dia, min o-ring ID
  */
 export function calcStretch(grooveDia: ResolvedDimension, oRingID: ResolvedDimension): RangeResult {
 	return {
@@ -73,7 +76,9 @@ export function calcStretch(grooveDia: ResolvedDimension, oRingID: ResolvedDimen
 
 /**
  * Stretched cross-section: CS reduced by diametral stretch (volume conservation).
- * CS_s = CS × (ID / grooveDia)^(2/3)
+ * CS_s = CS × (ID / seatDia)^(2/3) — seatDia as in calcStretch
+ * noGrowth: an unstretched ring keeps its free CS (rod seal with ID > rod — the ring
+ * hangs free on the rod and is held by OD compression instead, as Trelleborg models it).
  *
  * Min CS_s: smallest free CS, most stretch (min ID, max groove)
  * Max CS_s: largest free CS, least stretch (max ID, min groove)
@@ -81,10 +86,11 @@ export function calcStretch(grooveDia: ResolvedDimension, oRingID: ResolvedDimen
 export function calcStretchedCS(
 	cs: ResolvedDimension,
 	oRingID: ResolvedDimension,
-	grooveDia: ResolvedDimension
+	grooveDia: ResolvedDimension,
+	noGrowth = false
 ): RangeResult {
 	const stretched = (csVal: number, idVal: number, gdVal: number) =>
-		csVal * Math.pow(idVal / gdVal, 2 / 3);
+		csVal * Math.pow(noGrowth ? Math.min(1, idVal / gdVal) : idVal / gdVal, 2 / 3);
 
 	return {
 		nominal: stretched(cs.nominal, oRingID.nominal, grooveDia.nominal),
@@ -108,6 +114,21 @@ export function calcCompression(
 		min: ((stretchedCS.min - installedHeight.max) / stretchedCS.min) * 100,
 		max: ((stretchedCS.max - installedHeight.min) / stretchedCS.max) * 100
 	};
+}
+
+/**
+ * O-ring compression force per unit circumferential length (N/mm), Lindley's
+ * empirical relation: F/L = E·d₂·(1.25ε^1.5 + 50ε^6)
+ * E = Young's modulus (MPa), d₂ = cross-section (mm), ε = compression fraction.
+ * Multiply by the contact circumference for total force (N).
+ */
+export function calcCompressionForcePerLength(
+	youngsE: number,
+	cs: number,
+	compressionFrac: number
+): number {
+	const e = Math.max(0, compressionFrac);
+	return youngsE * cs * (1.25 * Math.pow(e, 1.5) + 50 * Math.pow(e, 6));
 }
 
 /**
@@ -164,15 +185,29 @@ export function calculateAll(
 			? calcInstalledHeight(boreDia, grooveDia)
 			: calcInstalledHeight(grooveDia, pistonDia);
 
-	const stretch = calcStretch(grooveDia, id);
-	const stretchedCS = calcStretchedCS(cs, id, grooveDia);
+	// The o-ring ID seats on the groove floor (piston) or on the rod (rod seal) —
+	// for a rod seal the groove dia is the outer wall, not what the ring stretches over.
+	const seatDia = sealType === 'piston' ? grooveDia : pistonDia;
+	const stretch = calcStretch(seatDia, id);
+	const stretchedCS = calcStretchedCS(cs, id, seatDia, sealType === 'rod');
 	const compression = calcCompression(installedHeight, stretchedCS);
 	// Fill uses installedHeight, not grooveDepth: the sealed cavity is bounded
 	// radially by the mating bore/rod, not just the machined groove pocket.
 	const fill = calcFill(stretchedCS, grooveWidth, installedHeight, grooveRadii);
 	const extrusionGap = calcExtrusionGap(boreDia, pistonDia);
 
-	return { stretch, compression, fill, extrusionGap, installedHeight, grooveDepth, stretchedCS };
+	const odCompression = calcOdCompression(cs, id, grooveDia);
+
+	return {
+		stretch,
+		compression,
+		fill,
+		extrusionGap,
+		installedHeight,
+		grooveDepth,
+		stretchedCS,
+		odCompression
+	};
 }
 
 /**
@@ -334,8 +369,10 @@ export function generateFromBore(
 			? bore - 2 * ihApprox // piston seal: groove < bore
 			: bore + 2 * ihApprox; // rod seal: groove > bore
 
-	// Ideal o-ring ID for this groove (inverse of stretch)
-	const idealID = grooveDiaTarget / (1 + targetStretch / 100);
+	// Ideal o-ring ID (inverse of stretch). The ring stretches over the groove floor
+	// (piston) or the rod (rod seal, rod = bore).
+	const seatTarget = sealType === 'piston' ? grooveDiaTarget : bore;
+	const idealID = seatTarget / (1 + targetStretch / 100);
 
 	// Find closest standard ID
 	let best = sizes[0];
@@ -352,9 +389,10 @@ export function generateFromBore(
 	// compression. Installed height = (bore - grooveDia)/2 (piston) controls the
 	// squeeze, and the stretched CS depends on grooveDia, so solve iteratively.
 	// (Stretch is allowed to float; best.id was chosen to keep it near target.)
-	let grooveDia = best.id * (1 + targetStretch / 100); // starting estimate
+	let grooveDia = grooveDiaTarget; // starting estimate
+	const seatDia = (gd: number) => (sealType === 'piston' ? gd : bore);
 	for (let i = 0; i < 12; i++) {
-		const csS = cs * Math.pow(best.id / grooveDia, 2 / 3);
+		const csS = cs * Math.pow(best.id / seatDia(grooveDia), 2 / 3);
 		const ihTarget = csS * (1 - targetCompression / 100);
 		const next = sealType === 'piston' ? bore - 2 * ihTarget : bore + 2 * ihTarget;
 		if (Math.abs(next - grooveDia) < 1e-7) {
@@ -367,7 +405,7 @@ export function generateFromBore(
 	// compression target isn't lost to coarse "nice number" rounding.
 	grooveDia = Math.round(grooveDia * 100) / 100;
 
-	const csStretched = cs * Math.pow(best.id / grooveDia, 2 / 3);
+	const csStretched = cs * Math.pow(best.id / seatDia(grooveDia), 2 / 3);
 	const boreDia = bore;
 	const pistonDia = bore;
 	const grooveDepth =
@@ -490,6 +528,7 @@ export interface GeneratedHousing {
  * @param targetFill         Target fill % (default 75)
  * @param grooveRadii        Groove corner radii (default 0.3 mm)
  * @param sealType           Piston or rod seal (default piston)
+ * @param maxStretchDeviation  Max stretch error (% points) accepted from nice-number rounding
  */
 export function generateHousing(
 	cs: number,
@@ -498,29 +537,41 @@ export function generateHousing(
 	targetCompression = 20,
 	targetFill = 65,
 	grooveRadii = 0.3,
-	sealType: SealType = 'piston'
+	sealType: SealType = 'piston',
+	maxStretchDeviation = Infinity
 ): GeneratedHousing {
-	// 1. Groove diameter — round to nearest, then recompute actual stretch
-	const grooveDia = roundNice(id * (1 + targetStretch / 100));
+	// 1. Seat diameter (what the o-ring ID stretches over) — round to nearest,
+	//    then recompute actual stretch. Piston: groove floor. Rod: the rod.
+	//    Fall back to fine rounding if the nice number would miss the target by
+	//    more than maxStretchDeviation (narrow bands, e.g. FFKM 2–3%).
+	const seatExact = id * (1 + targetStretch / 100);
+	const seatNice = roundNice(seatExact);
+	const seatDia =
+		Math.abs(((seatNice - id) / id) * 100 - targetStretch) <= maxStretchDeviation
+			? seatNice
+			: Math.round(seatExact * 100) / 100;
 
-	// 2. Recompute stretched CS from the actual rounded groove diameter
-	const csStretched = cs * Math.pow(id / grooveDia, 2 / 3);
+	// 2. Recompute stretched CS from the actual rounded seat diameter
+	const csStretched = cs * Math.pow(id / seatDia, 2 / 3);
 
 	// 3. Installed height for target compression
 	//    compression% = (CS_s - IH) / CS_s × 100  →  IH = CS_s × (1 - comp/100)
 	const ih = csStretched * (1 - targetCompression / 100);
 
-	let boreDia: number, pistonDia: number, grooveDepth: number;
+	let boreDia: number, pistonDia: number, grooveDia: number, grooveDepth: number;
 
 	if (sealType === 'piston') {
-		// Piston seal: bore/piston above groove
+		// Piston seal: groove on piston, bore/piston above groove
+		grooveDia = seatDia;
 		boreDia = roundNice(grooveDia + 2 * ih);
 		pistonDia = boreDia;
 		grooveDepth = (pistonDia - grooveDia) / 2;
 	} else {
-		// Rod seal: rod/bore below groove
-		pistonDia = roundNice(grooveDia - 2 * ih); // rodDia
+		// Rod seal: ring sits on the rod, groove in housing outside it
+		pistonDia = seatDia; // rodDia
 		boreDia = pistonDia;
+		// Groove is the derived (machined) dimension — round finely, as in generateFromBore
+		grooveDia = Math.round((pistonDia + 2 * ih) * 100) / 100;
 		grooveDepth = (grooveDia - boreDia) / 2;
 	}
 
@@ -534,11 +585,79 @@ export function generateHousing(
 	return { boreDia, pistonDia, grooveDia, grooveWidth };
 }
 
+/**
+ * Circumferential compression at the o-ring OD (rod seal: ring OD vs groove dia).
+ * OD compression % = (ID + 2·CS - grooveDia) / (ID + 2·CS) × 100
+ * Min: smallest ring (min ID, min CS), largest groove
+ * Max: largest ring (max ID, max CS), smallest groove
+ */
+export function calcOdCompression(
+	cs: ResolvedDimension,
+	oRingID: ResolvedDimension,
+	grooveDia: ResolvedDimension
+): RangeResult {
+	const odComp = (idVal: number, csVal: number, gdVal: number) => {
+		const od = idVal + 2 * csVal;
+		return ((od - gdVal) / od) * 100;
+	};
+	return {
+		nominal: odComp(oRingID.nominal, cs.nominal, grooveDia.nominal),
+		min: odComp(oRingID.min, cs.min, grooveDia.max),
+		max: odComp(oRingID.max, cs.max, grooveDia.min)
+	};
+}
+
+/**
+ * Stretch limits (Trelleborg): static 2–8% (min 0.5, max 9), dynamic 2–5% (min 0.5, max 6),
+ * FFKM max 3%. Rod seals have no lower limit — an unstretched ring is held by OD
+ * compression instead (see getOdCompressionCriteria).
+ */
+export function getStretchCriteria(
+	sealType: SealType,
+	application: Application,
+	material: OringMaterial
+): AcceptanceCriteria {
+	const c: AcceptanceCriteria =
+		application === 'dynamic'
+			? { min: 2, max: 5, hardMin: 0.5, hardMax: 6 }
+			: { min: 2, max: 8, hardMin: 0.5, hardMax: 9 };
+	if (material === 'FFKM') {
+		c.max = Math.min(c.max, 3);
+		c.hardMax = 3;
+	}
+	if (sealType === 'rod') {
+		c.min = -Infinity;
+		delete c.hardMin;
+	}
+	return c;
+}
+
+/**
+ * Stretch the generators aim for: middle of the recommended range. maxDeviation keeps
+ * nice-number rounding well inside that range (80% of its half-width).
+ */
+export function getTargetStretch(
+	application: Application,
+	material: OringMaterial
+): { target: number; maxDeviation: number } {
+	const c = getStretchCriteria('piston', application, material);
+	return { target: (c.min + c.max) / 2, maxDeviation: ((c.max - c.min) / 2) * 0.8 };
+}
+
+/** OD circumferential compression limit (Trelleborg): max 5%, or 3% for ID > 250 mm */
+export function getOdCompressionCriteria(oRingID: number): AcceptanceCriteria {
+	const max = oRingID > 250 ? 3 : 5;
+	return { min: -Infinity, max, hardMax: max };
+}
+
 /** Determine status of a value against acceptance criteria */
 export function getStatus(value: number, criteria: AcceptanceCriteria): Status {
 	if (value >= criteria.min && value <= criteria.max) return 'ok';
-	const margin = (criteria.max - criteria.min) * 0.2;
-	if (value >= criteria.min - margin && value <= criteria.max + margin) return 'warn';
+	const span = criteria.max - criteria.min;
+	const margin = Number.isFinite(span) ? span * 0.2 : 0;
+	const lo = criteria.hardMin ?? criteria.min - margin;
+	const hi = criteria.hardMax ?? criteria.max + margin;
+	if (value >= lo && value <= hi) return 'warn';
 	return 'error';
 }
 

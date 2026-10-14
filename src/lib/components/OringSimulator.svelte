@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
-	import type { SealType } from '$lib/types';
+	import type { SealType, AcceptanceCriteria, OringMaterial } from '$lib/types';
+	import { calcCompressionForcePerLength, getStatus } from '$lib/calculations';
+	import { MATERIALS, effectiveModulus, gentModulus } from '$lib/materials';
 
 	// ── Props (all required — parent renders conditionally) ────────────
 	const {
@@ -13,7 +15,10 @@
 		grooveDia, // groove diameter — needed for dynamic stretch calculation
 		oRingId, // o-ring inner diameter (free state)
 		boreDia, // bore diameter (housing ID for rod/face, bore ID for piston)
-		sealType = 'piston'
+		sealType = 'piston',
+		stretchCriteria = { min: 2, max: 8 }, // piston/rod only — face uses its own range
+		compressionCriteria = { min: 10, max: 35 },
+		material = 'NBR' // set from the o-ring material on the main page
 	}: {
 		cs: number;
 		glandDepth: number;
@@ -25,6 +30,9 @@
 		oRingId: number;
 		boreDia: number;
 		sealType?: SealType;
+		stretchCriteria?: AcceptanceCriteria;
+		compressionCriteria?: AcceptanceCriteria;
+		material?: OringMaterial;
 	} = $props();
 
 	// Piston seal: top = bore (housing, moves), bottom = piston with groove
@@ -61,8 +69,17 @@
 	let chamferBoreRadius = $state(1.0);
 	let physicsOn = $state(true);
 	let shoreA = $state(70);
-	// Gent's equation: Shore A hardness → Young's modulus (MPa)
-	const youngsE = $derived((0.0981 * (56 + 7.62336 * shoreA)) / (0.137505 * (254 - 2.54 * shoreA)));
+	// Gent's equation: Shore A hardness → Young's modulus (MPa). Drives sim physics.
+	const youngsE = $derived(gentModulus(shoreA));
+	// Compound-calibrated modulus for the force readout only (sim physics unchanged)
+	const forceModulus = $derived(effectiveModulus(material, shoreA));
+	const forceE = $derived(forceModulus.e);
+	const modulusNote: Record<string, string> = {
+		calibrated: 'calibrated point',
+		interpolated: 'interpolated between calibrated hardnesses',
+		scaled: 'Gent curve scaled through nearest calibrated point',
+		gent: 'uncalibrated — plain Gent'
+	};
 
 	let pDamp = $state(0.005);
 	let structDamp = $state(0.5);
@@ -189,6 +206,37 @@
 	// Render state synced from physics each frame (mutated in RAF loop)
 	let sqEst = $state(0);
 	let dynamicStretch = $state(0);
+	// Raw sim contact force on the moving part (N/mm, smoothed). The particle model's
+	// stiffness isn't calibrated for load, so only its direction and contact state are used.
+	let simFx = $state(0);
+	let simFy = $state(0);
+	// Forces are per mm of circumference (2D slice) — scale by the circumference
+	// of the moving part's sealing surface.
+	const contactCirc = $derived(
+		Math.PI *
+			(sealType === 'piston' ? boreDia : sealType === 'rod' ? boreDia - 2 * clearance : grooveDia)
+	);
+	// Compression is always along sim y (piston/rod radial, face axial), so the y force
+	// comes from Lindley at the live compression. x keeps the sim's Fx/Fy ratio so
+	// chamfer and friction loads during insertion still show up.
+	// Rod seal: an unstretched ring keeps its free CS (matches calcStretchedCS noGrowth)
+	const csStretchFrac = $derived(
+		sealType === 'rod' ? Math.max(0, dynamicStretch / 100) : dynamicStretch / 100
+	);
+	const stretchedCs = $derived(cs / Math.pow(Math.max(0.1, 1 + csStretchFrac), 2 / 3));
+	// Below this the ring isn't meaningfully touching the moving part
+	const contactEps = $derived(0.01 * youngsE * cs);
+	const forceY = $derived(
+		simFy > contactEps ? calcCompressionForcePerLength(forceE, stretchedCs, sqEst) * contactCirc : 0
+	);
+	const forceX = $derived(simFy > contactEps ? (forceY * simFx) / simFy : 0);
+	const forceTotal = $derived(Math.hypot(forceX, forceY));
+	// Piston/rod: x = axial (insertion), y = radial. Face: x = radial, y = axial (clamping).
+	const fxLabel = $derived(isFace ? 'Fx radial' : 'Fx axial');
+	const fyLabel = $derived(isFace ? 'Fy axial' : 'Fy radial');
+	function fmtForce(n: number): string {
+		return n >= 1000 ? `${(n / 1000).toFixed(2)} kN` : `${n.toFixed(n >= 100 ? 0 : 1)} N`;
+	}
 
 	// Status card colours (match analytical ResultRow: emerald/amber/red)
 	function statusColor(val: number, min: number, max: number): string {
@@ -197,8 +245,21 @@
 		if (val >= min - margin && val <= max + margin) return '#d97706';
 		return '#dc2626';
 	}
-	const compColor = $derived(statusColor(sqEst * 100, isFace ? 13 : 10, isFace ? 36 : 35));
-	const strColor = $derived(statusColor(dynamicStretch, isFace ? -2 : 2, isFace ? 3 : 8));
+	const statusHex = { ok: '#059669', warn: '#d97706', error: '#dc2626' };
+	const compColor = $derived(statusHex[getStatus(sqEst * 100, compressionCriteria)]);
+	// Outline flags over-compression only: amber in the warn band, red beyond it.
+	// A free ring reads 0%, so the lower limit isn't meaningful until the mating part is in place.
+	const outlineStroke = $derived.by(() => {
+		if (sqEst * 100 <= compressionCriteria.max) return 'var(--muted-foreground)';
+		return getStatus(sqEst * 100, compressionCriteria) === 'warn'
+			? statusHex.warn
+			: 'var(--destructive)';
+	});
+	const strColor = $derived(
+		isFace
+			? statusColor(dynamicStretch, -2, 3)
+			: statusHex[getStatus(dynamicStretch, stretchCriteria)]
+	);
 	// Chamfer must clear the o-ring protruding from the groove.
 	// Rod seal: clearance is measured from bore ID inward to rod OD.
 	//   No stretch: chamfer must clear oRingID/2 (half the free ID = inner radius from axis)
@@ -751,6 +812,9 @@
 			const csVal = cs;
 
 			let lastStretchFrac = stretchPercent / 100;
+			let partFxSum = 0,
+				partFySum = 0,
+				nSub = 0;
 			while (acc >= DT) {
 				acc -= DT;
 				const hX = posX; // housing position this substep
@@ -778,21 +842,30 @@
 				const rSpoke = csVal / 2; // rest length of radial spokes
 				// Rest area = polygon area at spawn (not π*r²) so pressure starts at zero
 				const restArea = (nPts / 2) * (csVal / 2) ** 2 * Math.sin((2 * Math.PI) / nPts);
-				// Dynamic stretch: as center particle moves radially, effective diameter changes.
-				// Piston/Rod 2D view: radial axis is Y (Piston +Y = inward, Rod +Y = outward).
-				// Face seal 2D view: Y is axial (compression); radial axis is X.
-				const oRingID = grooveDia / (1 + stretchPercent / 100);
-				let radialDisp: number;
-				let radialSign: number;
+				// Dynamic stretch.
+				// Piston/rod: ID stretch, from the ring's inner edge (the perimeter point nearest
+				// the axis) — same definition as the calculated result, so it reads 0% free and
+				// the calculated stretch once installed. Compressing the ring doesn't change it.
+				//   Piston: ID side faces the groove floor (y = glandDepth, +y = inward).
+				//   Rod: ID side faces the rod surface (y = 0, +y = outward).
+				// Face: Y is axial (compression); radial axis is X — centre offset from spawn.
+				let rawStretchFrac: number;
 				if (sealType === 'face') {
-					radialDisp = pts[ci].x; // spawn X = 0; +X = outward = more stretch
-					radialSign = 1;
+					// spawn X = 0; +X = outward = more stretch
+					rawStretchFrac = stretchPercent / 100 + (2 * pts[ci].x) / oRingId;
 				} else {
-					const spawnCy = glandDepth - csVal / 2;
-					radialDisp = pts[ci].y - spawnCy;
-					radialSign = sealType === 'rod' ? 1 : -1;
+					let minY = Infinity,
+						maxY = -Infinity;
+					for (let i = 0; i < nPts; i++) {
+						if (pts[i].y < minY) minY = pts[i].y;
+						if (pts[i].y > maxY) maxY = pts[i].y;
+					}
+					const idNow =
+						sealType === 'rod'
+							? boreDia - 2 * clearance + 2 * minY // rod dia + gap to inner edge
+							: grooveDia + 2 * (glandDepth - maxY); // groove floor dia − lift-off
+					rawStretchFrac = idNow / oRingId - 1;
 				}
-				const rawStretchFrac = stretchPercent / 100 + (radialSign * 2 * radialDisp) / oRingID;
 				const stretchFrac = Math.max(0, rawStretchFrac);
 				lastStretchFrac = rawStretchFrac;
 
@@ -905,6 +978,8 @@
 
 				// Contact + Coulomb friction (perimeter only — center is interior)
 				let matingF = 0;
+				let partFx = 0,
+					partFy = 0; // full 2D force on moving part (reaction to contact + friction)
 				const isMoving = (t: string) => t === 'bore' || t === 'chamfer' || t === 'face';
 				const face = sealType === 'face';
 				for (let i = 0; i < nPts; i++) {
@@ -933,10 +1008,14 @@
 								fy[i] -= fric * (vty / vt);
 								if (isMoving(seg.type)) {
 									matingF += face ? fric * (vty / vt) : fric * (vtx / vt);
+									partFx += fric * (vtx / vt);
+									partFy += fric * (vty / vt);
 								}
 							}
 							if (isMoving(seg.type)) {
 								matingF -= face ? cF * seg.ny : cF * seg.nx;
+								partFx -= cF * seg.nx;
+								partFy -= cF * seg.ny;
 							}
 						}
 					}
@@ -1018,6 +1097,17 @@
 				}
 				posX += vel * DT;
 				posX = Math.max(minPosMm, Math.min(maxPosMm, posX));
+
+				partFxSum += partFx;
+				partFySum += partFy;
+				nSub++;
+			}
+
+			// Force readout: average this frame's substeps, then low-pass to steady the display
+			if (nSub > 0) {
+				const a = 0.15;
+				simFx += a * (Math.abs(partFxSum / nSub) - simFx);
+				simFy += a * (Math.abs(partFySum / nSub) - simFy);
 			}
 
 			// Sync to render state
@@ -1038,7 +1128,8 @@
 			const h = maxY - minY;
 			// Measure compression against stretched CS (volume-conserved).
 			// Use dynamic stretch (not nominal) so compression tracks actual ring state.
-			const stretchedCS = csVal / Math.pow(1 + lastStretchFrac, 2 / 3);
+			const csFrac = sealType === 'rod' ? Math.max(0, lastStretchFrac) : lastStretchFrac;
+			const stretchedCS = csVal / Math.pow(1 + csFrac, 2 / 3);
 			sqEst = h > 0 ? Math.max(0, 1 - h / stretchedCS) : 0;
 			dynamicStretch = lastStretchFrac * 100;
 			if (showDebug && dbgFrame % 60 === 0) {
@@ -1352,6 +1443,20 @@
 			{/if}
 		</div>
 
+		<!-- Force on moving part (absolute magnitudes) — debug-only until calibrated -->
+		{#if showDebug}
+			<div class="space-y-2">
+				<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+					Force on {matingLabel}
+				</p>
+				<div class="grid grid-cols-3 gap-2">
+					{@render card('Total', fmtForce(forceTotal), 'var(--foreground)')}
+					{@render card(fxLabel, fmtForce(forceX), 'var(--chart-1)')}
+					{@render card(fyLabel, fmtForce(forceY), 'var(--chart-2)')}
+				</div>
+			</div>
+		{/if}
+
 		<!-- Lead-in geometry (piston/rod only) -->
 		{#if !isFace}
 			<div class="space-y-2">
@@ -1394,6 +1499,21 @@
 		<!-- Material -->
 		<div class="space-y-2">
 			<p class="text-[9px] font-medium uppercase tracking-widest text-muted-foreground">Material</p>
+			{#if showDebug}
+				<div class="flex items-center gap-2">
+					<span class="w-20 shrink-0 text-[10px] text-muted-foreground">Compound</span>
+					<span class="min-w-0 flex-1 text-[10px] text-foreground"
+						>{material}{MATERIALS[material].length ? '' : ' (uncalibrated)'}</span
+					>
+					<span
+						class="w-16 shrink-0 text-right text-[10px]"
+						style="color: var(--chart-2);"
+						title="Effective modulus used for force: {modulusNote[forceModulus.source]}"
+					>
+						{forceE.toFixed(1)} MPa{forceModulus.source === 'calibrated' ? '' : '*'}
+					</span>
+				</div>
+			{/if}
 			{@render sliderRow(
 				'Shore A',
 				shoreA,
@@ -1513,11 +1633,7 @@
 
 {#snippet oringBody()}
 	{#if oPath}
-		<path
-			d={oPath}
-			class="oring-body"
-			style="stroke: {sqEst > 0.25 ? 'var(--destructive)' : 'var(--muted-foreground)'}"
-		/>
+		<path d={oPath} class="oring-body" style="stroke: {outlineStroke}" />
 	{/if}
 {/snippet}
 

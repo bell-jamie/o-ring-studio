@@ -1,6 +1,12 @@
 /** Seal geometry type */
 export type SealType = 'piston' | 'rod' | 'face';
 
+/** Static or dynamic (reciprocating) application — sets stretch limits */
+export type Application = 'static' | 'dynamic';
+
+/** O-ring compound family */
+export type OringMaterial = 'NBR' | 'HNBR' | 'FKM' | 'EPDM' | 'VMQ' | 'FFKM';
+
 /** A dimension with nominal value and bilateral tolerances */
 export interface TolerancedDimension {
 	nominal: number;
@@ -42,6 +48,8 @@ export interface PistonSealResults {
 	installedHeight: RangeResult;
 	grooveDepth: RangeResult;
 	stretchedCS: RangeResult;
+	/** Circumferential compression at the o-ring OD — rod seals (≤ 0 → OD clear of groove) */
+	odCompression: RangeResult;
 }
 
 /** Input dimensions for a face seal analysis */
@@ -66,8 +74,14 @@ export interface FaceSealResults {
 /** Status assessment */
 export type Status = 'ok' | 'warn' | 'error';
 
-/** Acceptance criteria range */
+/**
+ * Acceptance criteria. [min, max] is the recommended range (ok).
+ * Optional hard limits bound the warn band; without them, warn extends 20% of the
+ * range beyond each side. Use min = -Infinity for an upper limit only.
+ */
 export interface AcceptanceCriteria {
 	min: number;
 	max: number;
+	hardMin?: number;
+	hardMax?: number;
 }
